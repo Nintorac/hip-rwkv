@@ -639,32 +639,18 @@ extern "C" {
     pub fn hipblaslt_to_hip_error(status: HipblasStatus) -> HipError;
 
     // FLA (Flash Linear Attention) kernels
-    /// Stage 1: Cumulative decay scan within each chunk.
-    /// Computes inclusive (gi) and exclusive (ge) cumulative sums of log-decay gk.
-    pub fn launch_fla_cumsum(
+    /// Fused Stages 1+2A+2B: Cumulative decay scan + gating + intra-chunk attention.
+    /// Computes inclusive cumsum (gi), decay-scaled vectors (qg, kg, ag, bg),
+    /// and 4 CxC attention matrices (A_qk, A_qb, A_ak, A_ab) in a single launch.
+    /// ge intermediates stay in registers (never written to global memory).
+    /// gi is written to global memory for Stage 4.
+    pub fn launch_fla_cumsum_intra(
         gk: *const f32,
-        gi: *mut f32,
-        ge: *mut f32,
-        chunk_indices: *const c_int,
-        cu_seqlens: *const c_int,
-        batch_offsets: *const c_int,
-        k: c_int,
-        h: c_int,
-        c: c_int,
-        total_chunks: c_int,
-        stream: HipStream,
-    ) -> HipError;
-
-    /// Stage 2: Intra-chunk attention matrices.
-    /// Part A computes decay-scaled vectors qg, kg, ag, bg.
-    /// Part B computes 4 CxC attention matrices A_qk, A_qb, A_ak, A_ab.
-    pub fn launch_fla_intra(
         q: *const f16,
         k: *const f16,
         a: *const f16,
         b: *const f16,
-        gi: *const f32,
-        ge: *const f32,
+        gi: *mut f32,
         qg: *mut f32,
         kg: *mut f32,
         ag: *mut f32,

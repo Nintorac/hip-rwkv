@@ -1,7 +1,6 @@
 //! HIP kernel wrappers for FLA (Flash Linear Attention) operations.
 //!
-//! Stage 1: [`fla_cumsum`] — cumulative decay scan within each chunk.
-//! Stage 2: [`fla_intra`] — intra-chunk attention matrices.
+//! Stages 1+2A+2B (fused): [`fla_cumsum_intra`] — cumulative decay + gating + attention matrices.
 //! Stage 3: [`fla_wy_repr`] — WY representation (matrix inversion + w/u computation).
 //! Stage 4: [`fla_chunk_h`] — inter-chunk state recurrence.
 //! Stage 5: [`fla_chunk_o`] — output combination.
@@ -12,142 +11,39 @@ use half::f16;
 
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
-    check, launch_fla_chunk_h, launch_fla_chunk_o, launch_fla_cumsum,
-    launch_fla_neg_exp_f16_to_f32, launch_fla_intra, launch_fla_wy_repr,
+    check, launch_fla_chunk_h, launch_fla_chunk_o, launch_fla_cumsum_intra,
+    launch_fla_neg_exp_f16_to_f32, launch_fla_wy_repr,
     launch_state_transpose, HipErrorKind, Result,
 };
 use crate::hip::tensor::TensorHip;
 
-/// Launch the FLA cumulative decay scan kernel (Stage 1).
+/// Launch the fused FLA cumsum + intra-chunk kernel (Stages 1+2A+2B).
 ///
-/// Computes intra-chunk inclusive and exclusive cumulative sums of log-decay `gk`:
-/// - `gi[t] = sum(gk[chunk_start..=t])` — inclusive (add current value, then store)
-/// - `ge[t] = sum(gk[chunk_start..t])` — exclusive (store, then add current value)
+/// Combines cumulative decay scan, decay-scaled gating, and intra-chunk attention
+/// matrix computation into a single kernel launch. The ge intermediate stays in
+/// registers (never written to global memory); gi is written for Stage 4.
+///
+/// # Phase 1: Cumsum + gating
+/// Computes inclusive cumsum `gi` and exclusive cumsum `ge` in registers, then:
+/// - `qg[t] = q[t] * exp(gi[t])`
+/// - `kg[t] = k[t] * exp(-gi[t] + g_last)`
+/// - `ag[t] = a[t] * exp(ge[t])`
+/// - `bg[t] = b[t] * exp(-gi[t] + g_last)`
+///
+/// # Phase 2: Attention matrices (using register gi/ge)
+/// Computes 4 CxC attention matrices per chunk:
+/// - `A_qk[i,j] = sum_k(q[i,k] * k[j,k] * exp(gi[i,k] - gi[j,k]))` for `j <= i`
+/// - `A_qb[i,j] = sum_k(q[i,k] * b[j,k] * exp(gi[i,k] - gi[j,k]))` for `j <= i`
+/// - `A_ak[i,j] = sum_k(a[i,k] * k[j,k] * exp(ge[i,k] - gi[j,k]))` for `j < i`
+/// - `A_ab[i,j] = sum_k(a[i,k] * b[j,k] * exp(ge[i,k] - gi[j,k]))` for `j < i`
 ///
 /// # Arguments
 /// * `gk` - Input log-decay tensor, shape `[K, H, T, B]` (f32)
-/// * `gi` - Output inclusive cumsum tensor, shape `[K, H, T, B]` (f32)
-/// * `ge` - Output exclusive cumsum tensor, shape `[K, H, T, B]` (f32)
-/// * `chunk_indices` - Flat `[total_chunks * 2]` mapping: `(seq_id, local_chunk_id)` pairs
-/// * `cu_seqlens` - Cumulative sequence lengths `[N+1]` (i32)
-/// * `chunk_size` - Number of tokens per chunk (C, typically 16)
-/// * `total_chunks` - Total number of chunks across all sequences
-/// * `stream` - HIP stream for async execution
-///
-/// # Memory Layout
-/// All per-token tensors use column-major `[K, H, T, B]` where K is fastest.
-/// For packed/varlen sequences, B=1 and T is total packed length.
-///
-/// # Errors
-/// Returns error on shape mismatches or kernel launch failure.
-pub fn fla_cumsum(
-    gk: &TensorHip<f32>,
-    gi: &mut TensorHip<f32>,
-    ge: &mut TensorHip<f32>,
-    chunk_indices: &TensorHip<i32>,
-    cu_seqlens: &TensorHip<i32>,
-    batch_offsets: &TensorHip<i32>,
-    chunk_size: usize,
-    total_chunks: usize,
-    stream: &Stream,
-) -> Result<()> {
-    // Extract dimensions from gk shape [K, H, T, B]
-    let k = gk.shape()[0]; // head_size
-    let h = gk.shape()[1]; // n_heads
-
-    // Validate gi and ge shapes match gk
-    if gi.shape() != gk.shape() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "fla_cumsum: gi shape mismatch: expected {}, got {}",
-                gk.shape(),
-                gi.shape()
-            ),
-        });
-    }
-    if ge.shape() != gk.shape() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "fla_cumsum: ge shape mismatch: expected {}, got {}",
-                gk.shape(),
-                ge.shape()
-            ),
-        });
-    }
-
-    // Validate chunk_indices: should have total_chunks * 2 elements
-    if chunk_indices.len() != total_chunks * 2 {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "fla_cumsum: chunk_indices length mismatch: expected {} (total_chunks={} * 2), got {}",
-                total_chunks * 2,
-                total_chunks,
-                chunk_indices.len()
-            ),
-        });
-    }
-
-    // Validate contiguity
-    if !gk.is_contiguous() || !gi.is_contiguous() || !ge.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "fla_cumsum: all tensors must be contiguous".to_string(),
-        });
-    }
-
-    if !chunk_indices.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "fla_cumsum: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
-        });
-    }
-
-    if total_chunks == 0 {
-        return Ok(());
-    }
-
-    unsafe {
-        check(launch_fla_cumsum(
-            gk.as_ptr(),
-            gi.as_mut_ptr(),
-            ge.as_mut_ptr(),
-            chunk_indices.as_ptr(),
-            cu_seqlens.as_ptr(),
-            batch_offsets.as_ptr(),
-            k as c_int,
-            h as c_int,
-            chunk_size as c_int,
-            total_chunks as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-/// Launch the FLA intra-chunk attention kernel (Stage 2).
-///
-/// This kernel has two parts:
-/// - **Part A** computes decay-scaled vectors from the cumulative decays:
-///   - `qg[t] = q[t] * exp(gi[t])`
-///   - `kg[t] = k[t] * exp(-gi[t] + g_last)`
-///   - `ag[t] = a[t] * exp(ge[t])`
-///   - `bg[t] = b[t] * exp(-gi[t] + g_last)`
-///
-/// - **Part B** computes 4 CxC attention matrices per chunk:
-///   - `A_qk[i,j] = sum_k(qg[i,k] * kg[j,k])` for `j <= i` (lower triangular)
-///   - `A_qb[i,j] = sum_k(qg[i,k] * bg[j,k])` for `j <= i`
-///   - `A_ak[i,j] = sum_k(ag[i,k] * kg[j,k])` for `j < i` (strict lower triangular)
-///   - `A_ab[i,j] = sum_k(ag[i,k] * bg[j,k])` for `j < i`
-///
-/// # Arguments
 /// * `q` - Query tensor, shape `[K, H, T, B]` (f16)
 /// * `k` - Key tensor, shape `[K, H, T, B]` (f16)
 /// * `a` - Adaptation tensor, shape `[K, H, T, B]` (f16)
 /// * `b` - Bias tensor, shape `[K, H, T, B]` (f16)
-/// * `gi` - Inclusive cumsum from Stage 1, shape `[K, H, T, B]` (f32)
-/// * `ge` - Exclusive cumsum from Stage 1, shape `[K, H, T, B]` (f32)
+/// * `gi` - Output inclusive cumsum tensor, shape `[K, H, T, B]` (f32) -- also used by Stage 4
 /// * `qg` - Output decay-scaled query, shape `[K, H, T, B]` (f32)
 /// * `kg` - Output decay-scaled key, shape `[K, H, T, B]` (f32)
 /// * `ag` - Output decay-scaled a, shape `[K, H, T, B]` (f32)
@@ -158,25 +54,22 @@ pub fn fla_cumsum(
 /// * `a_ab` - Output attention matrix A@B^T, shape `[C, C, H, total_chunks]` (f32)
 /// * `chunk_indices` - Flat `[total_chunks * 2]` mapping: `(seq_id, local_chunk_id)` pairs
 /// * `cu_seqlens` - Cumulative sequence lengths `[N+1]` (i32)
+/// * `batch_offsets` - Data offsets per sequence `[N]` (i32)
 /// * `chunk_size` - Number of tokens per chunk (C, typically 16)
 /// * `total_chunks` - Total number of chunks across all sequences
 /// * `stream` - HIP stream for async execution
-///
-/// # Memory Layout
-/// - Per-token tensors (q,k,a,b,gi,ge,qg,kg,ag,bg): column-major `[K, H, T, B]`
-/// - Attention matrices: column-major `[C, C, H, total_chunks]`
 ///
 /// # Errors
 /// Returns error on shape mismatches or kernel launch failure.
 #[allow(clippy::too_many_arguments)]
 #[allow(non_snake_case)]
-pub fn fla_intra(
+pub fn fla_cumsum_intra(
+    gk: &TensorHip<f32>,
     q: &TensorHip<f16>,
     k: &TensorHip<f16>,
     a: &TensorHip<f16>,
     b: &TensorHip<f16>,
-    gi: &TensorHip<f32>,
-    ge: &TensorHip<f32>,
+    gi: &mut TensorHip<f32>,
     qg: &mut TensorHip<f32>,
     kg: &mut TensorHip<f32>,
     ag: &mut TensorHip<f32>,
@@ -192,14 +85,24 @@ pub fn fla_intra(
     total_chunks: usize,
     stream: &Stream,
 ) -> Result<()> {
-    // Extract dimensions from gi shape [K, H, T, B]
-    let k_dim = gi.shape()[0]; // head_size
-    let h = gi.shape()[1]; // n_heads
+    // Extract dimensions from gk shape [K, H, T, B]
+    let k_dim = gk.shape()[0]; // head_size
+    let h = gk.shape()[1]; // n_heads
+
+    // Validate gi shape matches gk
+    if gi.shape() != gk.shape() {
+        return Err(HipErrorKind {
+            code: -1,
+            message: format!(
+                "fla_cumsum_intra: gi shape mismatch: expected {}, got {}",
+                gk.shape(),
+                gi.shape()
+            ),
+        });
+    }
 
     // Validate f16 input shapes match [K, H, T, B]
-    // The f16 inputs have the same shape as the f32 gi/ge tensors
-    // (same per-token layout, just different element type)
-    let expected_len = gi.len();
+    let expected_len = gk.len();
     for (name, tensor_len) in [
         ("q", q.len()),
         ("k", k.len()),
@@ -210,39 +113,27 @@ pub fn fla_intra(
             return Err(HipErrorKind {
                 code: -1,
                 message: format!(
-                    "fla_intra: {} length mismatch: expected {}, got {}",
+                    "fla_cumsum_intra: {} length mismatch: expected {}, got {}",
                     name, expected_len, tensor_len
                 ),
             });
         }
     }
 
-    // Validate ge shape matches gi
-    if ge.shape() != gi.shape() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "fla_intra: ge shape mismatch: expected {}, got {}",
-                gi.shape(),
-                ge.shape()
-            ),
-        });
-    }
-
-    // Validate f32 per-token output shapes match gi
+    // Validate f32 per-token output shapes match gk
     for (name, tensor) in [
         ("qg", qg as &TensorHip<f32>),
         ("kg", kg as &TensorHip<f32>),
         ("ag", ag as &TensorHip<f32>),
         ("bg", bg as &TensorHip<f32>),
     ] {
-        if tensor.shape() != gi.shape() {
+        if tensor.shape() != gk.shape() {
             return Err(HipErrorKind {
                 code: -1,
                 message: format!(
-                    "fla_intra: {} shape mismatch: expected {}, got {}",
+                    "fla_cumsum_intra: {} shape mismatch: expected {}, got {}",
                     name,
-                    gi.shape(),
+                    gk.shape(),
                     tensor.shape()
                 ),
             });
@@ -261,7 +152,7 @@ pub fn fla_intra(
             return Err(HipErrorKind {
                 code: -1,
                 message: format!(
-                    "fla_intra: {} too small: need {} elements (C={}, H={}, chunks={}), got {}",
+                    "fla_cumsum_intra: {} too small: need {} elements (C={}, H={}, chunks={}), got {}",
                     name,
                     expected_mat_len,
                     chunk_size,
@@ -278,7 +169,7 @@ pub fn fla_intra(
         return Err(HipErrorKind {
             code: -1,
             message: format!(
-                "fla_intra: chunk_indices length mismatch: expected {} (total_chunks={} * 2), got {}",
+                "fla_cumsum_intra: chunk_indices length mismatch: expected {} (total_chunks={} * 2), got {}",
                 total_chunks * 2,
                 total_chunks,
                 chunk_indices.len()
@@ -287,12 +178,12 @@ pub fn fla_intra(
     }
 
     // Validate contiguity
-    if !q.is_contiguous()
+    if !gk.is_contiguous()
+        || !q.is_contiguous()
         || !k.is_contiguous()
         || !a.is_contiguous()
         || !b.is_contiguous()
         || !gi.is_contiguous()
-        || !ge.is_contiguous()
         || !qg.is_contiguous()
         || !kg.is_contiguous()
         || !ag.is_contiguous()
@@ -300,7 +191,7 @@ pub fn fla_intra(
     {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_intra: all per-token tensors must be contiguous".to_string(),
+            message: "fla_cumsum_intra: all per-token tensors must be contiguous".to_string(),
         });
     }
     if !A_qk.is_contiguous()
@@ -310,13 +201,13 @@ pub fn fla_intra(
     {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_intra: all attention matrix tensors must be contiguous".to_string(),
+            message: "fla_cumsum_intra: all attention matrix tensors must be contiguous".to_string(),
         });
     }
     if !chunk_indices.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_intra: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
+            message: "fla_cumsum_intra: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
         });
     }
 
@@ -325,13 +216,13 @@ pub fn fla_intra(
     }
 
     unsafe {
-        check(launch_fla_intra(
+        check(launch_fla_cumsum_intra(
+            gk.as_ptr(),
             q.as_ptr(),
             k.as_ptr(),
             a.as_ptr(),
             b.as_ptr(),
-            gi.as_ptr(),
-            ge.as_ptr(),
+            gi.as_mut_ptr(),
             qg.as_mut_ptr(),
             kg.as_mut_ptr(),
             ag.as_mut_ptr(),

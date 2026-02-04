@@ -1,7 +1,6 @@
 // FLA (Flash Linear Attention) kernels for RWKV7 HIP backend.
 //
-// Stage 1: kernel_fla_cumsum — cumulative decay scan within each chunk.
-// Stage 2: kernel_fla_intra_gate + kernel_fla_intra_attn — intra-chunk attention.
+// Stages 1+2A+2B (fused): kernel_fla_cumsum_intra — cumulative decay + gating + attention matrices.
 // Stage 3: kernel_fla_wy_inv + kernel_fla_wy_wu — WY representation.
 // Stage 4: kernel_fla_chunk_h — inter-chunk state recurrence.
 // Stage 5: kernel_fla_chunk_o — output combination.
@@ -21,258 +20,40 @@
 extern "C" {
 
 // ============================================================================
-// Stage 1: Cumulative decay scan (kernel_fla_cumsum)
+// Fused Stages 1+2A+2B: kernel_fla_cumsum_intra
 //
-// Computes intra-chunk inclusive and exclusive cumulative sums of log-decay gk.
+// Combines cumulative decay scan (Stage 1), decay-scaled gating (Stage 2A),
+// and intra-chunk attention matrices (Stage 2B) into a single kernel launch.
 //
-// For each chunk:
-//   gi[t] = sum(gk[chunk_start..=t])   (inclusive: add current before store)
-//   ge[t] = sum(gk[chunk_start..t])    (exclusive: store before adding current)
+// This fusion keeps gi/ge intermediates in registers instead of writing them
+// to global memory, eliminating 2 kernel launches and 2 x K x T global
+// read+write round-trips.
 //
-// The Triton reference computes this as matrix-vector products:
-//   oi = lower_triangular_inclusive @ s
-//   oe = lower_triangular_exclusive @ s
+// Phase 1 (cumsum + gating): Sequential loop over C=16 positions.
+//   Thread kk accumulates gi_vals[C] and ge_vals[C] in registers.
+//   Also computes g_last, then writes qg, kg, ag, bg to global memory.
+//   gi is ALSO written to global memory since Stage 4 needs it.
 //
-// For C=16 with K=64 threads, each thread handles one element of the head
-// dimension and loops sequentially over the C=16 positions in the chunk.
-// This is equivalent but simpler for small C.
-//
-// Grid:  dim3(total_chunks, H, 1)
-// Block: dim3(K) where K=64 (one thread per head-size element)
-// ============================================================================
-
-__global__ __launch_bounds__(64, 8)
-void kernel_fla_cumsum(
-    const float* __restrict__ gk,           // [K, H, T_packed, 1] input log-decay
-    float* __restrict__ gi,                 // [K, H, T_packed, 1] inclusive cumsum output
-    float* __restrict__ ge,                 // [K, H, T_packed, 1] exclusive cumsum output
-    const int* __restrict__ chunk_indices,  // [total_chunks * 2] flat: (seq_id, local_chunk_id)
-    const int* __restrict__ cu_seqlens,     // [N+1] cumulative sequence lengths
-    const int* __restrict__ batch_offsets,  // [N] data offsets per sequence
-    int K,                                  // head_size (64)
-    int H,                                  // n_heads
-    int C                                   // chunk_size (16)
-) {
-    const int chunk_flat = blockIdx.x;  // which chunk (0..total_chunks-1)
-    const int h = blockIdx.y;           // which head (0..H-1)
-    const int k = threadIdx.x;          // which head-size element (0..K-1)
-
-    if (h >= H || k >= K) return;
-
-    // Resolve chunk -> sequence mapping
-    const int seq_id      = chunk_indices[chunk_flat * 2];
-    const int local_chunk = chunk_indices[chunk_flat * 2 + 1];
-
-    // Sequence boundaries
-    const int bos = batch_offsets[seq_id];
-    const int T   = cu_seqlens[seq_id + 1] - cu_seqlens[seq_id];
-
-    // Stride for advancing one token in column-major [K, H, T, B] layout
-    const int token_stride = H * K;
-
-    // Base offset for head h, element k, at sequence start
-    const int base = k + h * K + bos * token_stride;
-
-    // Sequential prefix sum over C positions in this chunk.
-    // C=16 is tiny so a simple loop is optimal (no shared memory needed).
-    float accum = 0.0f;
-
-    #pragma unroll
-    for (int t = 0; t < C; t++) {
-        const int t_abs = local_chunk * C + t;  // position within sequence
-
-        if (t_abs < T) {
-            const int idx = base + t_abs * token_stride;
-            const float val = gk[idx];
-
-            // Exclusive: store BEFORE adding current value
-            ge[idx] = accum;
-
-            accum += val;
-
-            // Inclusive: store AFTER adding current value
-            gi[idx] = accum;
-        }
-    }
-}
-
-// ============================================================================
-// Host launch wrapper for kernel_fla_cumsum
-// ============================================================================
-
-hipError_t launch_fla_cumsum(
-    const float* gk,
-    float* gi,
-    float* ge,
-    const int* chunk_indices,
-    const int* cu_seqlens,
-    const int* batch_offsets,
-    int K,
-    int H,
-    int C,
-    int total_chunks,
-    hipStream_t stream
-) {
-    if (K <= 0 || H <= 0 || C <= 0 || total_chunks <= 0) {
-        return hipSuccess;
-    }
-
-    dim3 grid(total_chunks, H, 1);
-    dim3 block(K);
-
-    hipLaunchKernelGGL(kernel_fla_cumsum, grid, block, 0, stream,
-                       gk, gi, ge, chunk_indices, cu_seqlens, batch_offsets,
-                       K, H, C);
-
-    return hipGetLastError();
-}
-
-// ============================================================================
-// Stage 2, Part A: Decay-scaled gating (kernel_fla_intra_gate)
-//
-// Computes gated versions of q, k, a, b using cumulative decays gi, ge:
-//   g_last = gi[last_valid_position_in_chunk]  (per K element)
-//   qg[t] = q[t] * exp(gi[t])
-//   kg[t] = k[t] * exp(-gi[t] + g_last)
-//   ag[t] = a[t] * exp(ge[t])
-//   bg[t] = b[t] * exp(-gi[t] + g_last)
-//
-// Inputs q, k, a, b are f16 [K, H, T, B].
-// Inputs gi, ge are f32 [K, H, T, B] (from Stage 1).
-// Outputs qg, kg, ag, bg are f32 [K, H, T, B].
+// Phase 2 (attention matrices): Uses register gi/ge values directly.
+//   Same wave-level reduction as the standalone kernel_fla_intra_attn.
+//   Computes 4 CxC attention matrices per chunk.
 //
 // Grid:  dim3(total_chunks, H, 1)
-// Block: dim3(K) where K=64 (one thread per head-size element)
+// Block: dim3(K=64) (one thread per head-size element)
 // ============================================================================
 
-__global__ __launch_bounds__(64, 8)
-void kernel_fla_intra_gate(
+__global__ __launch_bounds__(64, 4)
+void kernel_fla_cumsum_intra(
+    const float*  __restrict__ gk,             // [K, H, T_packed, 1] input log-decay
     const __half* __restrict__ q,              // [K, H, T_packed, 1] f16
     const __half* __restrict__ k,              // [K, H, T_packed, 1] f16
     const __half* __restrict__ a,              // [K, H, T_packed, 1] f16
     const __half* __restrict__ b,              // [K, H, T_packed, 1] f16
-    const float*  __restrict__ gi,             // [K, H, T_packed, 1] inclusive cumsum
-    const float*  __restrict__ ge,             // [K, H, T_packed, 1] exclusive cumsum
+    float* __restrict__ gi_out,                // [K, H, T_packed, 1] inclusive cumsum (for Stage 4)
     float* __restrict__ qg_out,                // [K, H, T_packed, 1] decay-scaled query
     float* __restrict__ kg_out,                // [K, H, T_packed, 1] decay-scaled key
     float* __restrict__ ag_out,                // [K, H, T_packed, 1] decay-scaled a
     float* __restrict__ bg_out,                // [K, H, T_packed, 1] decay-scaled b
-    const int* __restrict__ chunk_indices,     // [total_chunks * 2]
-    const int* __restrict__ cu_seqlens,        // [N+1]
-    const int* __restrict__ batch_offsets,     // [N] data offsets per sequence
-    int K_dim,                                 // head_size (64)
-    int H,                                     // n_heads
-    int C                                      // chunk_size (16)
-) {
-    const int chunk_flat = blockIdx.x;
-    const int h = blockIdx.y;
-    const int kk = threadIdx.x;  // head-size element index
-
-    if (h >= H || kk >= K_dim) return;
-
-    // Resolve chunk -> sequence mapping
-    const int seq_id      = chunk_indices[chunk_flat * 2];
-    const int local_chunk = chunk_indices[chunk_flat * 2 + 1];
-
-    // Sequence boundaries
-    const int bos = batch_offsets[seq_id];
-    const int T   = cu_seqlens[seq_id + 1] - cu_seqlens[seq_id];
-
-    // Early exit for chunks entirely beyond sequence
-    if (local_chunk * C >= T) return;
-
-    // Stride for advancing one token in [K, H, T, B] layout
-    const int token_stride = H * K_dim;
-
-    // Base offset for head h, element kk, at sequence start
-    const int base = kk + h * K_dim + bos * token_stride;
-
-    // Compute g_last: inclusive cumsum at last valid position in this chunk
-    const int last_t_abs = min((local_chunk + 1) * C, T) - 1;
-    const float g_last = gi[base + last_t_abs * token_stride];
-
-    // Process each position in the chunk
-    #pragma unroll
-    for (int t = 0; t < C; t++) {
-        const int t_abs = local_chunk * C + t;
-
-        if (t_abs < T) {
-            const int idx = base + t_abs * token_stride;
-
-            // Load f16 inputs and convert to f32
-            const float q_val = __half2float(q[idx]);
-            const float k_val = __half2float(k[idx]);
-            const float a_val = __half2float(a[idx]);
-            const float b_val = __half2float(b[idx]);
-
-            // Load f32 cumulative decays
-            const float gi_val = gi[idx];
-            const float ge_val = ge[idx];
-
-            // Compute decay-scaled outputs
-            const float exp_gi     = expf(gi_val);
-            const float exp_neg_gi = expf(-gi_val + g_last);
-            const float exp_ge     = expf(ge_val);
-
-            qg_out[idx] = q_val * exp_gi;
-            kg_out[idx] = k_val * exp_neg_gi;
-            ag_out[idx] = a_val * exp_ge;
-            bg_out[idx] = b_val * exp_neg_gi;
-        }
-    }
-}
-
-// ============================================================================
-// Stage 2, Part B: Intra-chunk attention matrices (kernel_fla_intra_attn)
-//
-// Computes 4 CxC attention matrices per chunk using raw inputs with inline
-// decay factors (NOT the pre-gated vectors which include g_last offset):
-//   A_qk[i,j] = sum_k(q[i,k] * k[j,k] * exp(gi[i,k] - gi[j,k]))  for j <= i
-//   A_qb[i,j] = sum_k(q[i,k] * b[j,k] * exp(gi[i,k] - gi[j,k]))  for j <= i
-//   A_ak[i,j] = sum_k(a[i,k] * k[j,k] * exp(ge[i,k] - gi[j,k]))  for j < i
-//   A_ab[i,j] = sum_k(a[i,k] * b[j,k] * exp(ge[i,k] - gi[j,k]))  for j < i
-//
-// Inputs q, k, a, b are f16 [K, H, T, B].
-// Inputs gi, ge are f32 [K, H, T, B] (from Stage 1).
-// Outputs are f32 [C, C, H, total_chunks] (column-major: i fastest).
-//
-// PARALLELISM STRATEGY: Block=K=64, process one (i,j) pair at a time.
-//
-// Each thread kk (0..K-1=63) owns one element of the K dimension.
-// For each row i = 0..C-1:
-//   a. Load row i data (q[i,kk], a[i,kk], gi[i,kk], ge[i,kk]) into registers
-//      — coalesced reads (consecutive threads read consecutive K elements)
-//   b. Precompute exp_gi_i = expf(gi[i,kk]) and exp_ge_i = expf(ge[i,kk])
-//      — constant across all j iterations, saves ~1920 expf calls/thread
-//   c. For each j = 0..i (lower triangular):
-//      - Load col j data (k[j,kk], b[j,kk], gi[j,kk]) — coalesced reads
-//      - Each thread computes partial products:
-//        decay_factor = expf(-gi[j,kk])
-//        prod_qk = q_i * k_j * exp_gi_i * decay_factor  (etc. for qb, ak, ab)
-//      - Wave-level reduction via __shfl_xor (5 steps within each wavefront)
-//      - Two wavefronts combined via shared memory
-//      - Lane 0 stores: A_qk[i,j] = reduced dot_qk, etc.
-//
-// Benefits over old block=C=16 design:
-//   - 64 threads = 2 full wave32 wavefronts (was 16 = half a wave, 50% SIMD waste)
-//   - All memory accesses coalesced (consecutive threads access consecutive K elements)
-//   - Redundant expf() eliminated by splitting exp(gi_i - gi_j) = exp(gi_i) * exp(-gi_j)
-//     and precomputing exp(gi_i), exp(ge_i) per row i
-//
-// Grid:  dim3(total_chunks, H, 1)
-// Block: dim3(K=64) (one thread per K-dimension element)
-//
-// Reference: repos/flash-linear-attention/fla/ops/generalized_delta_rule/dplr/chunk_A_fwd.py:109-133
-// ============================================================================
-
-__global__ __launch_bounds__(64, 8)
-void kernel_fla_intra_attn(
-    const __half* __restrict__ q,              // [K, H, T_packed, 1] f16
-    const __half* __restrict__ k,              // [K, H, T_packed, 1] f16
-    const __half* __restrict__ a,              // [K, H, T_packed, 1] f16
-    const __half* __restrict__ b,              // [K, H, T_packed, 1] f16
-    const float*  __restrict__ gi,             // [K, H, T_packed, 1] inclusive cumsum
-    const float*  __restrict__ ge,             // [K, H, T_packed, 1] exclusive cumsum
     float* __restrict__ A_qk,                  // [C, C, H, total_chunks]
     float* __restrict__ A_qb,                  // [C, C, H, total_chunks]
     float* __restrict__ A_ak,                  // [C, C, H, total_chunks]
@@ -302,27 +83,99 @@ void kernel_fla_intra_attn(
     const int token_stride = H * K_dim;
     const int base_h = h * K_dim + bos * token_stride;
 
-    // Number of valid positions in this chunk
+    // Chunk boundaries
     const int chunk_start = local_chunk * C;
-    const int valid_len = min(C, T - chunk_start);
+    const int valid_len = (chunk_start < T) ? min(C, T - chunk_start) : 0;
 
-    // Output base: [C, C, H, total_chunks]
-    // A[i, j, h, chunk] = i + j*C + h*C*C + chunk*H*C*C
+    // Output base for attention matrices: [C, C, H, total_chunks]
     const int out_hc = h * C * C + chunk_flat * H * C * C;
 
-    // Shared memory for cross-wavefront reduction.
-    // 64 threads = 2 wavefronts of 32. After intra-wave __shfl_xor reduction,
-    // wave 0 lane 0 and wave 1 lane 0 each have partial sums.
-    // We use smem[0..3] for wave 1's partial sums (4 dot products).
+    // ================================================================
+    // Phase 1: Cumsum + gating (sequential over C positions)
+    // ================================================================
+    // Register arrays for gi and ge values per position in the chunk.
+    // C=16, so 32 floats in registers (128 bytes per thread).
+    float gi_vals[16];
+    float ge_vals[16];
+
+    // Sequential prefix sum + gating
+    float accum = 0.0f;
+    float g_last = 0.0f;
+
+    // First pass: compute cumsum and cache gi/ge in registers
+    #pragma unroll
+    for (int t = 0; t < C; t++) {
+        if (t < valid_len) {
+            const int t_abs = chunk_start + t;
+            const int idx = base_h + kk + t_abs * token_stride;
+            const float val = gk[idx];
+
+            // Exclusive: before adding current value
+            ge_vals[t] = accum;
+
+            accum += val;
+
+            // Inclusive: after adding current value
+            gi_vals[t] = accum;
+
+            // Write gi to global memory (needed by Stage 4)
+            gi_out[idx] = accum;
+        } else {
+            gi_vals[t] = 0.0f;
+            ge_vals[t] = 0.0f;
+        }
+    }
+
+    // g_last = gi at last valid position (for gating)
+    if (valid_len > 0) {
+        g_last = gi_vals[valid_len - 1];
+    }
+
+    // Second pass: compute gated outputs using register values
+    if (valid_len > 0) {
+        #pragma unroll
+        for (int t = 0; t < C; t++) {
+            if (t < valid_len) {
+                const int t_abs = chunk_start + t;
+                const int idx = base_h + kk + t_abs * token_stride;
+
+                // Load f16 inputs and convert to f32
+                const float q_val = __half2float(q[idx]);
+                const float k_val = __half2float(k[idx]);
+                const float a_val = __half2float(a[idx]);
+                const float b_val = __half2float(b[idx]);
+
+                // Use register gi/ge values directly (no global memory read!)
+                const float gi_val = gi_vals[t];
+                const float ge_val = ge_vals[t];
+
+                // Compute decay-scaled outputs
+                const float exp_gi     = expf(gi_val);
+                const float exp_neg_gi = expf(-gi_val + g_last);
+                const float exp_ge     = expf(ge_val);
+
+                qg_out[idx] = q_val * exp_gi;
+                kg_out[idx] = k_val * exp_neg_gi;
+                ag_out[idx] = a_val * exp_ge;
+                bg_out[idx] = b_val * exp_neg_gi;
+            }
+        }
+    }
+
+    // ================================================================
+    // Phase 2: Attention matrices using register gi/ge values
+    // ================================================================
+    // Same wave-level reduction as the standalone kernel_fla_intra_attn,
+    // but using register values instead of global memory loads.
+
+    // Shared memory for cross-wavefront reduction (4 floats)
     __shared__ float smem[4];
 
-    // Wave identification
-    const int lane_id = kk & 31;       // lane within wavefront (0..31)
-    const int wave_id = kk >> 5;       // which wavefront (0 or 1)
+    const int lane_id = kk & 31;
+    const int wave_id = kk >> 5;
 
     // Early exit: if the entire chunk is beyond the sequence, zero the outputs
     if (chunk_start >= T) {
-        // Thread 0 zeros all outputs
         if (kk == 0) {
             for (int i = 0; i < C; i++) {
                 for (int j = 0; j < C; j++) {
@@ -339,9 +192,7 @@ void kernel_fla_intra_attn(
 
     // Outer loop over rows i
     for (int i = 0; i < C; i++) {
-        const int i_abs = chunk_start + i;
-
-        // If row i is beyond sequence length, zero out the row and continue
+        // If row i is beyond sequence length, zero out the row
         if (i >= valid_len) {
             if (kk == 0) {
                 for (int j = 0; j < C; j++) {
@@ -356,14 +207,16 @@ void kernel_fla_intra_attn(
         }
 
         // Load row i data — coalesced (thread kk reads element kk)
+        const int i_abs = chunk_start + i;
         const int row_i_offset = base_h + i_abs * token_stride;
         const float q_i  = __half2float(q[row_i_offset + kk]);
         const float a_i  = __half2float(a[row_i_offset + kk]);
-        const float gi_i = gi[row_i_offset + kk];
-        const float ge_i = ge[row_i_offset + kk];
 
-        // Precompute exp(gi_i) and exp(ge_i) — constant across all j iterations.
-        // This avoids redundant expf() calls: exp(gi_i - gi_j) = exp(gi_i) * exp(-gi_j).
+        // Use register gi/ge values instead of global memory loads
+        const float gi_i = gi_vals[i];
+        const float ge_i = ge_vals[i];
+
+        // Precompute exp(gi_i) and exp(ge_i) — constant across all j
         const float exp_gi_i = expf(gi_i);
         const float exp_ge_i = expf(ge_i);
 
@@ -383,10 +236,10 @@ void kernel_fla_intra_attn(
             }
 
             // Causal masks
-            const bool inclusive_mask = (i >= j);  // j <= i for A_qk, A_qb
-            const bool strict_mask   = (i > j);    // j < i  for A_ak, A_ab
+            const bool inclusive_mask = (i >= j);
+            const bool strict_mask   = (i > j);
 
-            // If inclusive mask fails, all four are zero (upper triangular)
+            // Upper triangular: all zero
             if (!inclusive_mask) {
                 if (kk == 0) {
                     A_qk[out_idx] = 0.0f;
@@ -402,11 +255,11 @@ void kernel_fla_intra_attn(
             const int row_j_offset = base_h + j_abs * token_stride;
             const float k_j  = __half2float(k[row_j_offset + kk]);
             const float b_j  = __half2float(b[row_j_offset + kk]);
-            const float gi_j = gi[row_j_offset + kk];
 
-            // Compute decay factors using precomputed exp values
-            // exp(gi_i - gi_j) = exp(gi_i) * exp(-gi_j)
-            // exp(ge_i - gi_j) = exp(ge_i) * exp(-gi_j)
+            // Use register gi value for column j
+            const float gi_j = gi_vals[j];
+
+            // Compute decay factors
             const float exp_neg_gi_j = expf(-gi_j);
             const float decay_qk = exp_gi_i * exp_neg_gi_j;
             const float decay_ak = exp_ge_i * exp_neg_gi_j;
@@ -426,8 +279,7 @@ void kernel_fla_intra_attn(
                 prod_ab += __shfl_xor(prod_ab, offset, 32);
             }
 
-            // Cross-wavefront reduction: wave 1 lane 0 writes partial sums to smem,
-            // wave 0 lane 0 adds them and stores the final result.
+            // Cross-wavefront reduction via shared memory
             if (wave_id == 1 && lane_id == 0) {
                 smem[0] = prod_qk;
                 smem[1] = prod_qb;
@@ -449,7 +301,6 @@ void kernel_fla_intra_attn(
                     A_ak[out_idx] = final_ak;
                     A_ab[out_idx] = final_ab;
                 } else {
-                    // j == i: strict lower triangular means zero
                     A_ak[out_idx] = 0.0f;
                     A_ab[out_idx] = 0.0f;
                 }
@@ -460,16 +311,16 @@ void kernel_fla_intra_attn(
 }
 
 // ============================================================================
-// Host launch wrapper for Stage 2 (both parts)
+// Host launch wrapper for fused Stages 1+2A+2B
 // ============================================================================
 
-hipError_t launch_fla_intra(
+hipError_t launch_fla_cumsum_intra(
+    const float*  gk,
     const __half* q,
     const __half* k,
     const __half* a,
     const __half* b,
-    const float* gi,
-    const float* ge,
+    float* gi,
     float* qg,
     float* kg,
     float* ag,
@@ -491,34 +342,17 @@ hipError_t launch_fla_intra(
         return hipSuccess;
     }
 
-    // Part A: Compute decay-scaled gated vectors
-    {
-        dim3 grid(total_chunks, H, 1);
-        dim3 block(K);
+    dim3 grid(total_chunks, H, 1);
+    dim3 block(K);
 
-        hipLaunchKernelGGL(kernel_fla_intra_gate, grid, block, 0, stream,
-                           q, k, a, b, gi, ge, qg, kg, ag, bg,
-                           chunk_indices, cu_seqlens, batch_offsets,
-                           K, H, C);
+    hipLaunchKernelGGL(kernel_fla_cumsum_intra, grid, block, 0, stream,
+                       gk, q, k, a, b,
+                       gi, qg, kg, ag, bg,
+                       A_qk, A_qb, A_ak, A_ab,
+                       chunk_indices, cu_seqlens, batch_offsets,
+                       K, H, C);
 
-        hipError_t err = hipGetLastError();
-        if (err != hipSuccess) return err;
-    }
-
-    // Part B: Compute CxC attention matrices using raw inputs with inline decay
-    // Block=K=64: one thread per K-dimension element, wave-level reductions
-    {
-        dim3 grid(total_chunks, H, 1);
-        dim3 block(K);
-
-        hipLaunchKernelGGL(kernel_fla_intra_attn, grid, block, 0, stream,
-                           q, k, a, b, gi, ge,
-                           A_qk, A_qb, A_ak, A_ab,
-                           chunk_indices, cu_seqlens, batch_offsets,
-                           K, H, C);
-
-        return hipGetLastError();
-    }
+    return hipGetLastError();
 }
 
 // ============================================================================

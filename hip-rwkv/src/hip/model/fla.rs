@@ -24,7 +24,7 @@ use half::f16;
 use crate::hip::device::Stream;
 use crate::hip::ffi::Result;
 use crate::hip::kernels::fla::{
-    fla_chunk_h, fla_chunk_o, fla_cumsum, fla_neg_exp_f16_to_f32, fla_intra, fla_wy_repr,
+    fla_chunk_h, fla_chunk_o, fla_cumsum_intra, fla_neg_exp_f16_to_f32, fla_wy_repr,
 };
 use crate::hip::scratch::PrefillScratch;
 use crate::hip::tensor::{TensorHip, TensorShape};
@@ -63,10 +63,9 @@ pub struct FlaChunkedWkv {
 
     // ---- FLA scratch buffer views (non-owning, pre-sized for current T, B) ----
 
-    /// f32 log-decay / inclusive cumsum output, shape [K, H, T, B]
+    /// f32 inclusive cumsum output, shape [K, H, T, B]
+    /// Also used as temporary storage for gk (neg_exp) before cumsum.
     pub fla_gi: TensorHip<f32>,
-    /// f32 exclusive cumsum output, shape [K, H, T, B]
-    pub fla_ge: TensorHip<f32>,
     /// Decay-scaled query, shape [K, H, T, B]
     pub fla_qg: TensorHip<f32>,
     /// Decay-scaled key, shape [K, H, T, B]
@@ -138,7 +137,6 @@ impl FlaChunkedWkv {
             n_head,
 
             fla_gi: scratch.fla_gi.resized_view_mut(per_token_shape)?,
-            fla_ge: scratch.fla_ge.resized_view_mut(per_token_shape)?,
             fla_qg: scratch.fla_qg.resized_view_mut(per_token_shape)?,
             fla_kg: scratch.fla_kg.resized_view_mut(per_token_shape)?,
             fla_ag: scratch.fla_ag.resized_view_mut(per_token_shape)?,
@@ -260,13 +258,12 @@ impl FlaChunkedWkv {
         // ================================================================
         // Stage 0.5: Convert raw att_w (f16) to gk (f32) = -exp(att_w)
         // ================================================================
-        // The FLA cumsum kernel needs gk = -exp(w) in f32. We compute this
-        // directly from the raw log-domain decay (att_w), avoiding the
+        // The fused cumsum+intra kernel needs gk = -exp(w) in f32. We compute
+        // this directly from the raw log-domain decay (att_w), avoiding the
         // precision-losing round-trip through f16 exp(-exp(w)) then log.
         //
-        // We reuse fla_gi as temporary storage for gk since Stage 1 will
-        // overwrite fla_gi anyway. After cumsum, fla_gi holds the inclusive
-        // cumsum result.
+        // We reuse fla_gi as temporary storage for gk since the fused kernel
+        // will overwrite fla_gi with the inclusive cumsum result.
 
         // Use a temporary view for gk that shares memory with fla_gi
         // per_token_shape uses self.batch_size (=1 for packed) since buffers are [K,H,T,1]
@@ -277,34 +274,16 @@ impl FlaChunkedWkv {
         fla_neg_exp_f16_to_f32(att_w, &mut gk, stream)?;
 
         // ================================================================
-        // Stage 1: Cumulative decay scan
+        // Stages 1+2A+2B (fused): Cumsum + gating + attention matrices
         // ================================================================
-        // gk currently lives in fla_gi memory. fla_cumsum reads gk and
-        // writes gi (inclusive) and ge (exclusive). Since gk and gi share
-        // the same memory, the kernel reads the original gk value for each
-        // element before writing the cumsum. The cumsum kernel processes
-        // each chunk sequentially (C=16 loop), reading gk[t] then writing
-        // gi[t], so the read-before-write is safe.
-        fla_cumsum(
-            &gk,
-            &mut self.fla_gi,
-            &mut self.fla_ge,
-            &chunk_indices_gpu,
-            &cu_seqlens_gpu,
-            &batch_offsets_gpu,
-            c,
-            total_chunks,
-            stream,
-        )?;
-        // fla_gi and gk alias the same memory, and now fla_gi holds the
-        // inclusive cumsum. Drop the gk alias to avoid confusion.
-        drop(gk);
-
-        // ================================================================
-        // Stage 2: Intra-chunk attention matrices
-        // ================================================================
-        // Input: q(f16), k(f16), a(f16), b(f16), gi(f32), ge(f32)
-        // Output: qg, kg, ag, bg (f32 per-token), A_qk, A_qb, A_ak, A_ab (f32 CxC matrices)
+        // The fused kernel computes cumsum, gating, and attention matrices
+        // in a single launch. gi/ge intermediates stay in registers (ge is
+        // never written to global memory). gi IS written for Stage 4.
+        //
+        // gk currently lives in fla_gi memory. The fused kernel reads gk
+        // and writes gi (inclusive cumsum) to the same memory -- safe because
+        // the kernel processes each chunk sequentially (C=16 loop), reading
+        // gk[t] then writing gi[t], so the read-before-write is safe.
         //
         // In the WKV pipeline:
         //   r = receptance (query in RWKV7 = q in FLA)
@@ -312,13 +291,13 @@ impl FlaChunkedWkv {
         //   v = value (v in FLA)
         //   a = wkv_a = -kk (a in FLA)
         //   b = wkv_b = kk * att_a (b in FLA)
-        fla_intra(
-            r, // q in FLA (receptance)
-            k, // k in FLA (controlled key)
-            a, // a in FLA (wkv_a = -kk)
-            b, // b in FLA (wkv_b = kk * att_a)
-            &self.fla_gi,
-            &self.fla_ge,
+        fla_cumsum_intra(
+            &gk,                   // gk (log-decay, aliases fla_gi memory)
+            r,                     // q in FLA (receptance)
+            k,                     // k in FLA (controlled key)
+            a,                     // a in FLA (wkv_a = -kk)
+            b,                     // b in FLA (wkv_b = kk * att_a)
+            &mut self.fla_gi,      // gi output (also overwrites gk's memory)
             &mut self.fla_qg,
             &mut self.fla_kg,
             &mut self.fla_ag,
@@ -334,6 +313,9 @@ impl FlaChunkedWkv {
             total_chunks,
             stream,
         )?;
+        // fla_gi and gk alias the same memory, and now fla_gi holds the
+        // inclusive cumsum. Drop the gk alias to avoid confusion.
+        drop(gk);
 
         // ================================================================
         // Stage 3: WY representation

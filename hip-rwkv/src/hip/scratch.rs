@@ -264,13 +264,10 @@ pub struct PrefillScratch {
     // Sized for worst-case: max_total_chunks = batch_size * ceil_div(max_prefill_chunk, fla_chunk_size)
     // All buffers are f32 for FP32 precision (matching the plan's "FP32 state" requirement).
 
-    /// Cumulative intra-chunk decay (Stage 1).
+    /// Inclusive cumsum of intra-chunk decay (Stages 1+2 fused).
+    /// Also serves as temporary storage for gk = -exp(att_w).
     /// Shape: `[head_size, n_head, max_prefill_chunk, batch_size]`
     pub fla_gi: TensorHip<f32>,
-
-    /// Total chunk decay (Stage 1).
-    /// Shape: `[head_size, n_head, max_prefill_chunk, batch_size]`
-    pub fla_ge: TensorHip<f32>,
 
     /// Decay-scaled query (Stage 2): `qg[t] = q[t] * exp(gi[t])`.
     /// Shape: `[head_size, n_head, max_prefill_chunk, batch_size]`
@@ -477,7 +474,6 @@ impl PrefillScratch {
 
             // FLA chunked prefill buffers (all f32)
             fla_gi: TensorHip::new(fla_per_token_shape)?,
-            fla_ge: TensorHip::new(fla_per_token_shape)?,
             fla_qg: TensorHip::new(fla_per_token_shape)?,
             fla_kg: TensorHip::new(fla_per_token_shape)?,
             fla_ag: TensorHip::new(fla_per_token_shape)?,
@@ -548,9 +544,10 @@ impl PrefillScratch {
         let head_size = if n_head > 0 { c / n_head } else { 0 };
         let b = self.config.batch_size;
         let max_total_chunks = (t + fla_c - 1) / fla_c + b;
-        // 9 per-token buffers: fla_gi, fla_ge, fla_qg, fla_kg, fla_ag, fla_bg, fla_w_wy, fla_u_wy, fla_v_new
+        // 8 per-token buffers: fla_gi, fla_qg, fla_kg, fla_ag, fla_bg, fla_w_wy, fla_u_wy, fla_v_new
+        // (fla_ge removed: ge stays in registers in the fused kernel)
         // Each is [head_size, n_head, T, 1] = head_size * n_head * T elements
-        let fla_per_token_elements = 9 * head_size * n_head * t;
+        let fla_per_token_elements = 8 * head_size * n_head * t;
         // 5 chunk-matrix buffers: fla_A_qk, fla_A_qb, fla_A_ab, fla_A_ak, fla_A_ab_inv
         // Each is [C, C, n_head, max_total_chunks]
         let fla_chunk_mat_elements = 5 * fla_c * fla_c * n_head * max_total_chunks;
