@@ -1,6 +1,7 @@
-//! HIP profiling test - run with:
+//! HIP decode profiling - run with:
 //! ```
-//! WEB_RWKV_HIP_PROF=1 cargo test --release --test hip_profiling -- --nocapture --ignored
+//! WEB_RWKV_HIP_PROF=1 cargo test --release --features hip \
+//!     --test hip_decode_profiling -- --nocapture --ignored
 //! ```
 
 use std::path::Path;
@@ -9,43 +10,59 @@ use anyhow::Result;
 
 use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig, Rwkv7Hip};
 
-const MODEL_PATH: &str = "/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st";
+const DEFAULT_MODEL_PATH: &str = "/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st";
+
+fn current_model_path() -> &'static str {
+    // Use a leak to return &'static str for env override; acceptable for test process.
+    static mut OVERRIDE: Option<&'static str> = None;
+    unsafe {
+        if let Some(p) = OVERRIDE {
+            return p;
+        }
+        if let Ok(val) = std::env::var("WEB_RWKV_MODEL") {
+            OVERRIDE = Some(Box::leak(val.into_boxed_str()));
+        } else {
+            OVERRIDE = Some(DEFAULT_MODEL_PATH);
+        }
+        OVERRIDE.unwrap()
+    }
+}
 
 fn model_exists() -> bool {
-    Path::new(MODEL_PATH).exists()
+    Path::new(current_model_path()).exists()
 }
 
 /// Run decode-only profiling at batch size 256.
 #[tokio::test]
 #[ignore = "requires model file and GPU"]
-async fn profile_decode_batch_256() -> Result<()> {
+async fn decode_profile_batch_256() -> Result<()> {
     profile_decode(256, 32).await
 }
 
 /// Run decode-only profiling at batch size 64 for comparison.
 #[tokio::test]
 #[ignore = "requires model file and GPU"]
-async fn profile_decode_batch_64() -> Result<()> {
+async fn decode_profile_batch_64() -> Result<()> {
     profile_decode(64, 32).await
 }
 
 /// Run decode-only profiling at batch size 16.
 #[tokio::test]
 #[ignore = "requires model file and GPU"]
-async fn profile_decode_batch_16() -> Result<()> {
+async fn decode_profile_batch_16() -> Result<()> {
     profile_decode(16, 32).await
 }
 
 /// Run decode-only profiling at batch size 1.
 #[tokio::test]
 #[ignore = "requires model file and GPU"]
-async fn profile_decode_batch_1() -> Result<()> {
+async fn decode_profile_batch_1() -> Result<()> {
     profile_decode(1, 128).await
 }
 
 async fn profile_decode(batch_size: usize, decode_steps: usize) -> Result<()> {
     if !model_exists() {
-        eprintln!("Skipping: model not found at {}", MODEL_PATH);
+        eprintln!("Skipping: model not found at {}", current_model_path());
         return Ok(());
     }
 
@@ -55,10 +72,10 @@ async fn profile_decode(batch_size: usize, decode_steps: usize) -> Result<()> {
     );
 
     // Load model
-    let model = Rwkv7Hip::load(MODEL_PATH)?;
+    let model = Rwkv7Hip::load(current_model_path())?;
     let info = model.info();
 
-    eprintln!("Model: {} v7", MODEL_PATH);
+    eprintln!("Model: {} v7", current_model_path());
     eprintln!(
         "  Vocab: {}, Layers: {}, Embed: {}",
         info.n_vocab, info.n_layer, info.n_embd
@@ -150,7 +167,7 @@ async fn profile_decode(batch_size: usize, decode_steps: usize) -> Result<()> {
 #[ignore = "requires model file and GPU"]
 async fn profile_decode_sweep() -> Result<()> {
     if !model_exists() {
-        eprintln!("Skipping: model not found at {}", MODEL_PATH);
+        eprintln!("Skipping: model not found at {}", current_model_path());
         return Ok(());
     }
 
@@ -159,7 +176,7 @@ async fn profile_decode_sweep() -> Result<()> {
     let batch_sizes = [32, 64, 128, 256];
     let decode_steps = 8; // Match benchmark config
 
-    eprintln!("Model: {}", MODEL_PATH);
+    eprintln!("Model: {}", current_model_path());
 
     eprintln!(
         "\n{:>10} {:>12} {:>12} {:>12}",
@@ -169,7 +186,7 @@ async fn profile_decode_sweep() -> Result<()> {
 
     for &batch_size in &batch_sizes {
         // Build fresh model for each batch size with chunk_size=1 for decode
-        let model = Rwkv7Hip::load(MODEL_PATH)?;
+        let model = Rwkv7Hip::load(current_model_path())?;
         let config = HipRuntimeConfig::new(1, batch_size);
         let runtime = HipRuntime::with_config(model, config)?;
 

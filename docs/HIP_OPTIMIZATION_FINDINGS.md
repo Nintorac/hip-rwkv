@@ -693,12 +693,12 @@ WEB_RWKV_BENCH_PROFILE=decode_batch_sweep cargo test --release --features hip \
 
 # Run HIP profiling (per-operation timing)
 WEB_RWKV_HIP_PROF=1 cargo test --release --features hip,hip-prof \
-    --test hip_profiling -- --ignored --nocapture profile_decode_batch_256
+    --test hip_decode_profiling -- --ignored --nocapture decode_profile_batch_256
 
 # Profile with rocprofv3 (includes kernel dispatch timing)
 rocprofv3 --hip-trace --hsa-trace --kernel-trace --memory-copy-trace \
-    -o /tmp/rocprof_results -- ./target/release/deps/hip_profiling-* \
-    profile_decode_batch_256 --ignored --nocapture
+    -o /tmp/rocprof_results -- ./target/release/deps/hip_decode_profiling-* \
+    decode_profile_batch_256 --ignored --nocapture
 
 # Query rocprofv3 results (SQLite database)
 sqlite3 /tmp/rocprof_results_results.db "
