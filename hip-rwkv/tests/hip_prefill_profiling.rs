@@ -55,10 +55,8 @@ fn prefill_profile(batch_size: usize, seq_len: usize, chunk_size: usize) -> Resu
     // Drive chunk size via env so the runtime picks up the template instantiation.
     std::env::set_var("WEB_RWKV_FLA_CHUNK_SIZE", chunk_size.to_string());
 
-    // Build config sized for total packed tokens (batch * seq_len) to avoid the
-    // max_prefill_chunk guard tripping on large batches.
-    let t_total = batch_size * seq_len;
-    let config = HipRuntimeConfig::new(t_total, batch_size);
+    // Build config with max_prefill_chunk capped at seq_len to limit buffer size.
+    let config = HipRuntimeConfig::new(seq_len, batch_size);
     let model = Rwkv7Hip::load(current_model_path())?;
     let runtime = HipRuntime::with_config(model, config)?;
 

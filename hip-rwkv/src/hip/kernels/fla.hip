@@ -17,8 +17,6 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 
-extern "C" {
-
 // ============================================================================
 // Fused Stages 1+2A+2B: kernel_fla_cumsum_intra
 //
@@ -42,6 +40,7 @@ extern "C" {
 // Block: dim3(K=64) (one thread per head-size element)
 // ============================================================================
 
+template <int C_TPL>
 __global__ __launch_bounds__(64, 4)
 void kernel_fla_cumsum_intra(
     const float*  __restrict__ gk,             // [K, H, T_packed, 1] input log-decay
@@ -62,9 +61,9 @@ void kernel_fla_cumsum_intra(
     const int* __restrict__ cu_seqlens,        // [N+1]
     const int* __restrict__ batch_offsets,     // [N] data offsets per sequence
     int K_dim,                                 // head_size (64)
-    int H,                                     // n_heads
-    int C                                      // chunk_size (16)
+    int H                                      // n_heads
 ) {
+    const int C = C_TPL;
     const int chunk_flat = blockIdx.x;
     const int h = blockIdx.y;
     const int kk = threadIdx.x;  // K-dimension element index (0..K-1)
@@ -94,9 +93,9 @@ void kernel_fla_cumsum_intra(
     // Phase 1: Cumsum + gating (sequential over C positions)
     // ================================================================
     // Register arrays for gi and ge values per position in the chunk.
-    // C=16, so 32 floats in registers (128 bytes per thread).
-    float gi_vals[16];
-    float ge_vals[16];
+    // C_TPL floats each in registers.
+    float gi_vals[C_TPL];
+    float ge_vals[C_TPL];
 
     // Sequential prefix sum + gating
     float accum = 0.0f;
@@ -311,6 +310,11 @@ void kernel_fla_cumsum_intra(
 }
 
 // ============================================================================
+// Host launch wrappers (extern "C" for FFI from Rust)
+// ============================================================================
+extern "C" {
+
+// ============================================================================
 // Host launch wrapper for fused Stages 1+2A+2B
 // ============================================================================
 
@@ -345,15 +349,26 @@ hipError_t launch_fla_cumsum_intra(
     dim3 grid(total_chunks, H, 1);
     dim3 block(K);
 
-    hipLaunchKernelGGL(kernel_fla_cumsum_intra, grid, block, 0, stream,
-                       gk, q, k, a, b,
-                       gi, qg, kg, ag, bg,
-                       A_qk, A_qb, A_ak, A_ab,
-                       chunk_indices, cu_seqlens, batch_offsets,
-                       K, H, C);
+    #define LAUNCH_CUMSUM_INTRA(C_VAL) \
+        hipLaunchKernelGGL(kernel_fla_cumsum_intra<C_VAL>, grid, block, 0, stream, \
+                           gk, q, k, a, b, \
+                           gi, qg, kg, ag, bg, \
+                           A_qk, A_qb, A_ak, A_ab, \
+                           chunk_indices, cu_seqlens, batch_offsets, \
+                           K, H)
 
+    switch (C) {
+        case 16: LAUNCH_CUMSUM_INTRA(16); break;
+        case 32: LAUNCH_CUMSUM_INTRA(32); break;
+        case 64: LAUNCH_CUMSUM_INTRA(64); break;
+        default: return hipErrorInvalidValue;
+    }
+
+    #undef LAUNCH_CUMSUM_INTRA
     return hipGetLastError();
 }
+
+} // extern "C" (pause for template kernels)
 
 // ============================================================================
 // Stage 3, Part A: Lower-triangular matrix inversion (kernel_fla_wy_inv)
@@ -381,13 +396,14 @@ hipError_t launch_fla_cumsum_intra(
 // Block: dim3(C=16) (one thread per column j of the CxC matrix)
 // ============================================================================
 
-__global__ __launch_bounds__(16, 16)
+template <int C_TPL>
+__global__ __launch_bounds__(64, 8)
 void kernel_fla_wy_inv(
     const float* __restrict__ A_ab,       // [C, C, H, total_chunks]
     float* __restrict__ A_ab_inv,         // [C, C, H, total_chunks]
-    int H,                                // n_heads
-    int C                                 // chunk_size (16)
+    int H                                 // n_heads
 ) {
+    const int C = C_TPL;
     const int chunk_flat = blockIdx.x;    // which chunk
     const int h = blockIdx.y;             // which head
     const int j = threadIdx.x;            // column index (0..C-1)
@@ -398,50 +414,31 @@ void kernel_fla_wy_inv(
     // A[i, j, h, chunk] = i + j*C + h*C*C + chunk*H*C*C
     const int mat_base = h * C * C + chunk_flat * H * C * C;
 
-    // Shared memory for the CxC matrix.
-    // Layout: smem[row][col] — row i, column j.
-    // Since C=16, this is 16*16 = 256 floats = 1 KB.
-    __shared__ float smem[16][16];
+    // Shared memory for the CxC matrix (dynamic size via template).
+    // Layout: smem[row * C + col] — row i, column j.
+    __shared__ float smem[C_TPL * C_TPL];
 
     // Step 1: Load column j of A_ab into shared memory.
     // In column-major A[i, j] = A_ab[mat_base + i + j*C], so we read
     // elements with i = 0..C-1 for our column j.
     // Enforce strict lower triangular: A[i,j] = 0 unless i > j.
-    #pragma unroll
     for (int i = 0; i < C; i++) {
         float val = 0.0f;
         if (i > j) {
             val = A_ab[mat_base + i + j * C];
         }
-        smem[i][j] = val;
+        smem[i * C + j] = val;
     }
     __syncthreads();
 
     // Step 2: Forward substitution, row by row.
-    // For row i (i = 1..C-1):
-    //   For each column j < i:
-    //     b_a[j] = smem[i][j]   (current row i values)
-    //   Then: b_a[j] += sum_{m=0}^{i-1} b_a[m] * smem[m][j]  for j < i
-    //   Write updated row back.
-    //
-    // Each thread handles one column j. Thread j computes the updated
-    // value for position (i, j) in the matrix.
     for (int i = 1; i < C; i++) {
-        // Only columns j < i have non-zero values in this row
-        // (strict lower triangular structure is preserved through forward sub)
-        float b_a_j = smem[i][j];  // Current value at (i, j)
+        float b_a_j = smem[i * C + j];  // Current value at (i, j)
 
         if (j < i) {
-            // Forward substitution: accumulate contributions from rows m < i
-            // b_a[j] += sum_{m} b_a[m] * smem[m][j]
-            // But b_a[m] = smem[i][m] (the current row i values).
-            // So: b_a_j += sum_{m=0}^{i-1} smem[i][m] * smem[m][j]
             float accum = 0.0f;
-            #pragma unroll
-            for (int m = 0; m < C; m++) {
-                if (m < i) {
-                    accum += smem[i][m] * smem[m][j];
-                }
+            for (int m = 0; m < i; m++) {
+                accum += smem[i * C + m] * smem[m * C + j];
             }
             b_a_j += accum;
         }
@@ -449,19 +446,18 @@ void kernel_fla_wy_inv(
         __syncthreads();
 
         // Write the updated row i back to shared memory
-        smem[i][j] = b_a_j;
+        smem[i * C + j] = b_a_j;
 
         __syncthreads();
     }
 
     // Step 3: Add identity: A[j][j] += 1.0
-    smem[j][j] += 1.0f;
+    smem[j * C + j] += 1.0f;
     __syncthreads();
 
     // Step 4: Store the entire matrix column j to A_ab_inv
-    #pragma unroll
     for (int i = 0; i < C; i++) {
-        A_ab_inv[mat_base + i + j * C] = smem[i][j];
+        A_ab_inv[mat_base + i + j * C] = smem[i * C + j];
     }
 }
 
@@ -500,6 +496,8 @@ void kernel_fla_wy_inv(
 // Block: dim3(K=64) (one thread per K-dimension element)
 // ============================================================================
 
+
+template <int C>
 __global__ __launch_bounds__(64, 8)
 void kernel_fla_wy_wu(
     const float*  __restrict__ A_ab_inv,        // [C, C, H, total_chunks]
@@ -512,8 +510,7 @@ void kernel_fla_wy_wu(
     const int* __restrict__ cu_seqlens,         // [N+1]
     const int* __restrict__ batch_offsets,      // [N] data offsets per sequence
     int K_dim,                                  // head_size (64)
-    int H,                                      // n_heads
-    int C                                       // chunk_size (16)
+    int H                                       // n_heads
 ) {
     const int chunk_flat = blockIdx.x;
     const int i_h = blockIdx.y;            // which head (0..H-1)
@@ -545,17 +542,17 @@ void kernel_fla_wy_wu(
     // Shared memory for A_ab_inv and compound matrices (16x16 each)
     // Plus one row of coefficients for broadcast (16 inv + 16 compound = 32 floats)
     // Total LDS: 16*16 + 16*16 + 32 = 544 floats = 2176 bytes
-    __shared__ float smem_inv[16][16];
-    __shared__ float smem_ak[16][16];
-    __shared__ float smem_coeffs[32];  // [0..15] = inv_row, [16..31] = compound_row
+    __shared__ float smem_inv[C][C];
+    __shared__ float smem_ak[C][C];
+    __shared__ float smem_coeffs[2 * C];  // [0..C-1] = inv_row, [C..2C-1] = compound_row
 
     // Step 1: Cooperatively load A_ab_inv and A_ak into LDS.
     // 64 threads loading 16x16 = 256 elements each: 4 elements per thread.
     // Layout: column-major A[i, j] = A[mat_base + i + j*C]
     // We flatten to linear index and map back.
     {
-        const int total_elems = C * C;  // 256
-        const int elems_per_thread = (total_elems + 63) / 64;  // 4
+        const int total_elems = C * C;
+        const int elems_per_thread = (total_elems + 63) / 64;
         for (int e = 0; e < elems_per_thread; e++) {
             const int lin = kk + e * 64;
             if (lin < total_elems) {
@@ -578,17 +575,6 @@ void kernel_fla_wy_wu(
     }
     __syncthreads();
 
-    // Step 2: Compute compound = A_ab_inv @ A_ak in-place into smem_ak.
-    // compound[i][j] = sum_m(smem_inv[i][m] * smem_ak[m][j])
-    // We need a separate buffer since we read smem_ak while writing.
-    // Use smem_ak as read-only source, write compound into a temp buffer,
-    // then copy back. But we can avoid extra buffer by computing compound
-    // on-the-fly per row during the main loop (Step 3).
-    //
-    // Actually: we compute compound rows lazily per row i in the main loop,
-    // using smem_inv and smem_ak which are both fully loaded. This avoids
-    // needing a third 16x16 shared memory buffer.
-
     // Base offset for head h at sequence start
     const int head_base = i_h * K_dim + bos * token_stride;
 
@@ -601,15 +587,15 @@ void kernel_fla_wy_wu(
         // Threads 0..C-1 each compute one element of the compound row.
         if (kk < C) {
             // inv_coeff = smem_inv[i][kk] (already loaded)
-            smem_coeffs[kk] = smem_inv[i][kk];
+                smem_coeffs[kk] = smem_inv[i][kk];
 
             // compound[i][kk] = sum_m(smem_inv[i][m] * smem_ak[m][kk])
             float compound_val = 0.0f;
             #pragma unroll
-            for (int m = 0; m < 16; m++) {
+            for (int m = 0; m < C; m++) {
                 compound_val += smem_inv[i][m] * smem_ak[m][kk];
             }
-            smem_coeffs[16 + kk] = compound_val;
+            smem_coeffs[C + kk] = compound_val;
         }
         __syncthreads();
 
@@ -618,10 +604,10 @@ void kernel_fla_wy_wu(
         float u_val = 0.0f;
 
         #pragma unroll
-        for (int j = 0; j < 16; j++) {
+        for (int j = 0; j < C; j++) {
             if (j < valid_len) {
                 const float inv_coeff = smem_coeffs[j];
-                const float compound_coeff = smem_coeffs[16 + j];
+                const float compound_coeff = smem_coeffs[C + j];
 
                 // Only do work if at least one coefficient is non-zero
                 // (triangular structure means many are zero)
@@ -651,6 +637,8 @@ void kernel_fla_wy_wu(
 // Launches kernel_fla_wy_inv then kernel_fla_wy_wu sequentially.
 // ============================================================================
 
+extern "C" {
+
 hipError_t launch_fla_wy_repr(
     const float* A_ab,
     const float* A_ak,
@@ -673,12 +661,23 @@ hipError_t launch_fla_wy_repr(
     }
 
     // Part A: Compute A_ab_inv (matrix inversion)
+    // Block=C threads (one per column of the CxC matrix)
     {
         dim3 grid(total_chunks, H, 1);
         dim3 block(C);
 
-        hipLaunchKernelGGL(kernel_fla_wy_inv, grid, block, 0, stream,
-                           A_ab, A_ab_inv, H, C);
+        #define LAUNCH_WY_INV(C_VAL) \
+            hipLaunchKernelGGL(kernel_fla_wy_inv<C_VAL>, grid, block, 0, stream, \
+                               A_ab, A_ab_inv, H)
+
+        switch (C) {
+            case 16: LAUNCH_WY_INV(16); break;
+            case 32: LAUNCH_WY_INV(32); break;
+            case 64: LAUNCH_WY_INV(64); break;
+            default: return hipErrorInvalidValue;
+        }
+
+        #undef LAUNCH_WY_INV
 
         hipError_t err = hipGetLastError();
         if (err != hipSuccess) return err;
@@ -689,14 +688,26 @@ hipError_t launch_fla_wy_repr(
         dim3 grid(total_chunks, H, 1);
         dim3 block(K);
 
-        hipLaunchKernelGGL(kernel_fla_wy_wu, grid, block, 0, stream,
-                           A_ab_inv, A_ak, ag, v, w_wy, u_wy,
-                           chunk_indices, cu_seqlens, batch_offsets,
-                           K, H, C);
+        #define LAUNCH_WY_WU(C_VAL) \
+            hipLaunchKernelGGL(kernel_fla_wy_wu<C_VAL>, grid, block, 0, stream, \
+                               A_ab_inv, A_ak, ag, v, w_wy, u_wy, \
+                               chunk_indices, cu_seqlens, batch_offsets, \
+                               K, H)
+
+        switch (C) {
+            case 16: LAUNCH_WY_WU(16); break;
+            case 32: LAUNCH_WY_WU(32); break;
+            case 64: LAUNCH_WY_WU(64); break;
+            default: return hipErrorInvalidValue;
+        }
+
+        #undef LAUNCH_WY_WU
 
         return hipGetLastError();
     }
 }
+
+} // extern "C" (pause for kernel definitions)
 
 // ============================================================================
 // Stage 4: Inter-chunk state recurrence (kernel_fla_chunk_h)
@@ -919,6 +930,8 @@ void kernel_fla_chunk_h(
 // Host launch wrapper for Stage 4 (inter-chunk state recurrence)
 // ============================================================================
 
+extern "C" {
+
 hipError_t launch_fla_chunk_h(
     const float*  kg,
     const float*  bg,
@@ -953,6 +966,8 @@ hipError_t launch_fla_chunk_h(
 
     return hipGetLastError();
 }
+
+} // extern "C" (pause for template kernel)
 
 // ============================================================================
 // Stage 5: Output combination (kernel_fla_chunk_o)
@@ -1003,6 +1018,7 @@ hipError_t launch_fla_chunk_h(
 // Reference: repos/flash-linear-attention/fla/ops/generalized_delta_rule/dplr/chunk_o_fwd.py
 // ============================================================================
 
+template <int C_TPL>
 __global__ __launch_bounds__(64, 8)
 void kernel_fla_chunk_o(
     const float*  __restrict__ qg,             // [K, H, T_packed, 1] decay-scaled query (f32)
@@ -1016,9 +1032,9 @@ void kernel_fla_chunk_o(
     const int*    __restrict__ cu_seqlens,     // [N+1]
     const int*    __restrict__ batch_offsets,  // [N] data offsets per sequence
     int K_dim,                                 // head_size (64)
-    int H,                                     // n_heads
-    int C                                      // chunk_size (16)
+    int H                                      // n_heads
 ) {
+    const int C = C_TPL;
     const int chunk_flat = blockIdx.x;     // which chunk (0..total_chunks-1)
     const int i_h = blockIdx.y;            // which head (0..H-1)
     const int kk = threadIdx.x;            // V/K-dimension element (0..K-1)
@@ -1058,9 +1074,11 @@ void kernel_fla_chunk_o(
     const int mat_base = i_h * C * C + chunk_flat * H * C * C;
 
     // Shared memory: used to broadcast per-position data to all K threads.
-    // Layout: smem[0..63] for qg row, smem[64..79] for A_qk row, smem[80..95] for A_qb row
-    // Total: 64 + 16 + 16 = 96 floats = 384 bytes
-    __shared__ float smem[96];
+    // For C>32 we tile j in chunks of TILE to reduce LDS footprint.
+    constexpr int TILE = 16;
+    // Layout: smem[0..K-1] for qg row, smem[K..K+TILE-1] for A_qk tile,
+    //         smem[K+TILE..K+2*TILE-1] for A_qb tile
+    __shared__ float smem[64 + 2 * TILE];
 
     // Base offset for head h, at sequence start
     const int head_base = i_h * K_dim + bos * token_stride;
@@ -1074,20 +1092,6 @@ void kernel_fla_chunk_o(
         if (kk < K_dim) {
             smem[kk] = qg[kk + tok_offset_i];
         }
-
-        // Also load A_qk row i and A_qb row i into smem (threads 0..C-1 handle this)
-        if (kk < C) {
-            // Load with causal mask: only j <= i, and j < valid_len
-            float aqk_val = 0.0f;
-            float aqb_val = 0.0f;
-            if (kk <= i && kk < valid_len) {
-                // A[i, kk] = A[mat_base + i + kk * C]
-                aqk_val = A_qk[mat_base + i + kk * C];
-                aqb_val = A_qb[mat_base + i + kk * C];
-            }
-            smem[64 + kk] = aqk_val;
-            smem[80 + kk] = aqb_val;
-        }
         __syncthreads();
 
         // Step (b): dot = sum(qg[i, k] * h_col[k]) for k = 0..63
@@ -1098,28 +1102,40 @@ void kernel_fla_chunk_o(
             dot += smem[k] * h_col[k];
         }
 
-        // Step (d): local_attn = sum(A_qk[i, j] * v[j, kk]) for j = 0..valid_len-1
+        // Step (d,e): tiled accumulation over j to reduce LDS footprint for large C.
         float local_attn = 0.0f;
-        #pragma unroll
-        for (int j = 0; j < C; j++) {
-            const float aqk = smem[64 + j];
-            if (aqk != 0.0f) {
-                const int j_abs = chunk_start + j;
-                const float v_val = __half2float(v[kk + head_base + j_abs * token_stride]);
-                local_attn += aqk * v_val;
-            }
-        }
-
-        // Step (e): wy_corr = sum(A_qb[i, j] * v_new[j, kk]) for j = 0..valid_len-1
         float wy_corr = 0.0f;
-        #pragma unroll
-        for (int j = 0; j < C; j++) {
-            const float aqb = smem[80 + j];
-            if (aqb != 0.0f) {
-                const int j_abs = chunk_start + j;
-                const float vn_val = v_new[kk + head_base + j_abs * token_stride];
-                wy_corr += aqb * vn_val;
+        for (int j0 = 0; j0 < valid_len; j0 += TILE) {
+            const int tile = min(TILE, valid_len - j0);
+
+            // Load tile of A_qk / A_qb into shared memory (threads kk < tile)
+            if (kk < tile) {
+                const int j_idx = j0 + kk;
+                float aqk_val = 0.0f;
+                float aqb_val = 0.0f;
+                if (j_idx <= i && j_idx < valid_len) {
+                    aqk_val = A_qk[mat_base + i + j_idx * C];
+                    aqb_val = A_qb[mat_base + i + j_idx * C];
+                }
+                smem[64 + kk] = aqk_val;
+                smem[64 + TILE + kk] = aqb_val;
             }
+            __syncthreads();
+
+            for (int tj = 0; tj < tile; tj++) {
+                const int j_abs = chunk_start + j0 + tj;
+                const float aqk = smem[64 + tj];
+                const float aqb = smem[64 + TILE + tj];
+                if (aqk != 0.0f) {
+                    const float v_val = __half2float(v[kk + head_base + j_abs * token_stride]);
+                    local_attn += aqk * v_val;
+                }
+                if (aqb != 0.0f) {
+                    const float vn_val = v_new[kk + head_base + j_abs * token_stride];
+                    wy_corr += aqb * vn_val;
+                }
+            }
+            __syncthreads();
         }
 
         // Step (f): Combine and store as f16 — coalesced write
@@ -1133,6 +1149,8 @@ void kernel_fla_chunk_o(
 // ============================================================================
 // Host launch wrapper for Stage 5 (output combination)
 // ============================================================================
+
+extern "C" {
 
 hipError_t launch_fla_chunk_o(
     const float*  qg,
@@ -1158,11 +1176,20 @@ hipError_t launch_fla_chunk_o(
     dim3 grid(total_chunks, H, 1);
     dim3 block(K);  // Block=K=64: one thread per V/K-dimension element
 
-    hipLaunchKernelGGL(kernel_fla_chunk_o, grid, block, 0, stream,
-                       qg, v, v_new, A_qk, A_qb, h, o,
-                       chunk_indices, cu_seqlens, batch_offsets,
-                       K, H, C);
+    #define LAUNCH_CHUNK_O(C_VAL) \
+        hipLaunchKernelGGL(kernel_fla_chunk_o<C_VAL>, grid, block, 0, stream, \
+                           qg, v, v_new, A_qk, A_qb, h, o, \
+                           chunk_indices, cu_seqlens, batch_offsets, \
+                           K, H)
 
+    switch (C) {
+        case 16: LAUNCH_CHUNK_O(16); break;
+        case 32: LAUNCH_CHUNK_O(32); break;
+        case 64: LAUNCH_CHUNK_O(64); break;
+        default: return hipErrorInvalidValue;
+    }
+
+    #undef LAUNCH_CHUNK_O
     return hipGetLastError();
 }
 

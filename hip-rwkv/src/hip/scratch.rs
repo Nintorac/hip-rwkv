@@ -23,6 +23,29 @@ use half::f16;
 /// Default FLA chunk size (matches fla-org reference default for RWKV7).
 pub const FLA_CHUNK_SIZE: usize = 16;
 
+/// Supported FLA chunk sizes (must match template instantiations in fla.hip).
+pub const FLA_CHUNK_SIZES_SUPPORTED: &[usize] = &[16, 32, 64];
+
+/// Read FLA chunk size from `WEB_RWKV_FLA_CHUNK_SIZE` environment variable,
+/// falling back to [`FLA_CHUNK_SIZE`] if unset.
+///
+/// Panics if the env var is set but contains an invalid value or an unsupported chunk size.
+pub fn fla_chunk_size_from_env() -> usize {
+    match std::env::var("WEB_RWKV_FLA_CHUNK_SIZE") {
+        Ok(val) => {
+            let c: usize = val
+                .parse()
+                .unwrap_or_else(|_| panic!("WEB_RWKV_FLA_CHUNK_SIZE={val:?} is not a valid usize"));
+            assert!(
+                FLA_CHUNK_SIZES_SUPPORTED.contains(&c),
+                "WEB_RWKV_FLA_CHUNK_SIZE={c} is not supported; supported values: {FLA_CHUNK_SIZES_SUPPORTED:?}"
+            );
+            c
+        }
+        Err(_) => FLA_CHUNK_SIZE,
+    }
+}
+
 /// Runtime configuration for HIP inference.
 ///
 /// Controls buffer sizing and batching behavior for the forward pass.
@@ -50,7 +73,7 @@ impl Default for HipRuntimeConfig {
         Self {
             max_prefill_chunk: 256,
             batch_size: 1,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 }
@@ -61,7 +84,7 @@ impl HipRuntimeConfig {
         Self {
             max_prefill_chunk,
             batch_size,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 
@@ -70,7 +93,7 @@ impl HipRuntimeConfig {
         Self {
             max_prefill_chunk: 1,
             batch_size: 1,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 
@@ -79,7 +102,7 @@ impl HipRuntimeConfig {
         Self {
             max_prefill_chunk: max_chunk,
             batch_size: 1,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 }
@@ -595,7 +618,7 @@ impl Default for PrefillConfig {
         Self {
             max_prefill_chunk: 256,
             batch_size: 1,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 }
@@ -606,7 +629,7 @@ impl PrefillConfig {
         Self {
             max_prefill_chunk,
             batch_size,
-            fla_chunk_size: FLA_CHUNK_SIZE,
+            fla_chunk_size: fla_chunk_size_from_env(),
         }
     }
 

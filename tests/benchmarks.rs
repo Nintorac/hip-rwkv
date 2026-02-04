@@ -696,6 +696,10 @@ pub fn expand_profile(
                             }
                             "prefill_uniform" | "prefill_mixed" => {
                                 for &seq_len in &profile.seq_lens {
+                                    // HACK: skip cases where seq_len != chunk_size
+                                    if seq_len != token_chunk_size {
+                                        continue;
+                                    }
                                     cases.push(BenchCase {
                                         model: model.clone(),
                                         backend: backend.clone(),
