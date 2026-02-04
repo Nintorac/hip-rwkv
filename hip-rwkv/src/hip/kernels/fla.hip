@@ -1013,13 +1013,33 @@ hipError_t launch_fla_chunk_h(
 // Both A_qk and A_qb are applied with causal mask (i >= j) before use.
 // Positions beyond sequence length produce zero output.
 //
+// PARALLELISM STRATEGY: Block=K=64, sequential over C=16 positions.
+//
+// Each thread kk (0..K-1=63) owns one column of the per-chunk state h:
+//   h_col[k] = h[k * K + kk]  for k = 0..63
+// This column stays in registers for the entire chunk.
+//
+// For each position i (0..C-1):
+//   a. Load qg[i, :] into smem (64 values, coalesced), barrier
+//   b. dot = sum(smem[k] * h_col[k])  -- register-only dot, no cross-thread reduction
+//   c. Load A_qk[i, j] and A_qb[i, j] for j = 0..C-1 (broadcast via smem)
+//   d. local_attn = sum(a_qk[j] * v[j, kk])   -- coalesced v reads across threads
+//   e. wy_corr   = sum(a_qb[j] * v_new[j, kk]) -- coalesced v_new reads
+//   f. o[kk + tok_offset_i] = __float2half(dot + local_attn + wy_corr)  -- coalesced write
+//
+// Benefits over the old block=C=16 design:
+//   - 64 threads = 2 full wave32 wavefronts (was 16 = half a wave, 50% SIMD waste)
+//   - State dot product is register-local (no O(K^2) serial FMA per thread)
+//   - Output writes are coalesced (consecutive threads write consecutive addresses)
+//   - Reads of v and v_new are coalesced (thread kk reads element kk)
+//
 // Grid:  dim3(total_chunks, H, 1)
-// Block: dim3(C=16) (one thread per row i within chunk)
+// Block: dim3(K=64) (one thread per V/K-dimension element)
 //
 // Reference: repos/flash-linear-attention/fla/ops/generalized_delta_rule/dplr/chunk_o_fwd.py
 // ============================================================================
 
-__global__ __launch_bounds__(16, 16)
+__global__ __launch_bounds__(64, 8)
 void kernel_fla_chunk_o(
     const float*  __restrict__ qg,             // [K, H, T_packed, 1] decay-scaled query (f32)
     const __half* __restrict__ v,              // [K, H, T_packed, 1] original value     (f16)
@@ -1037,9 +1057,9 @@ void kernel_fla_chunk_o(
 ) {
     const int chunk_flat = blockIdx.x;     // which chunk (0..total_chunks-1)
     const int i_h = blockIdx.y;            // which head (0..H-1)
-    const int i = threadIdx.x;             // row index within chunk (0..C-1)
+    const int kk = threadIdx.x;            // V/K-dimension element (0..K-1)
 
-    if (i_h >= H || i >= C) return;
+    if (i_h >= H || kk >= K_dim) return;
 
     // Resolve chunk -> sequence mapping
     const int seq_id      = chunk_indices[chunk_flat * 2];
@@ -1049,105 +1069,100 @@ void kernel_fla_chunk_o(
     const int bos = batch_offsets[seq_id];
     const int T   = cu_seqlens[seq_id + 1] - cu_seqlens[seq_id];
 
-    // Absolute position of this thread's token
-    const int i_abs = local_chunk * C + i;
-
     // Token stride in [K, H, T, B] layout
     const int token_stride = H * K_dim;
 
-    // If this position is beyond the sequence length, zero the output and return
-    if (i_abs >= T) {
-        // Zero output for out-of-bounds positions
-        const int out_base = i_h * K_dim + (bos + i_abs) * token_stride;
-        // Only write if the position is within the padded buffer
-        // (positions beyond T in the last chunk don't need writes since
-        // they are never read downstream, but we handle this defensively)
-        return;
-    }
+    // Chunk boundaries
+    const int chunk_start = local_chunk * C;
+    const int valid_len = min(C, T - chunk_start);
 
-    // Token offset for this thread's position
-    const int tok_offset = (bos + i_abs) * token_stride + i_h * K_dim;
+    // Early exit: entire chunk beyond sequence
+    if (chunk_start >= T) return;
+
+    // ---- Load state column kk into registers ----
+    // h layout: [K, K, H, total_chunks], V (column) fastest
+    // h[k_row, k_col, h, chunk] = k_row * K + k_col + h * K * K + chunk * H * K * K
+    const int h_base = i_h * K_dim * K_dim + chunk_flat * H * K_dim * K_dim;
+    float h_col[64];
+    #pragma unroll
+    for (int k = 0; k < 64; k++) {
+        h_col[k] = h[k * K_dim + kk + h_base];
+    }
 
     // Attention matrix base: [C, C, H, total_chunks]
     // A[row_i, col_j, h, chunk] = row_i + col_j * C + h * C * C + chunk * H * C * C
     const int mat_base = i_h * C * C + chunk_flat * H * C * C;
 
-    // Number of valid positions in this chunk
-    const int chunk_start = local_chunk * C;
-    const int valid_len = min(C, T - chunk_start);
+    // Shared memory: used to broadcast per-position data to all K threads.
+    // Layout: smem[0..63] for qg row, smem[64..79] for A_qk row, smem[80..95] for A_qb row
+    // Total: 64 + 16 + 16 = 96 floats = 384 bytes
+    __shared__ float smem[96];
 
-    // ---- State contribution base: h[K, K, H, total_chunks], V fastest ----
-    // h[k_row, k_col, h, chunk] = k_row * K + k_col + h * K * K + chunk * H * K * K
-    const int h_base = i_h * K_dim * K_dim + chunk_flat * H * K_dim * K_dim;
+    // Base offset for head h, at sequence start
+    const int head_base = i_h * K_dim + bos * token_stride;
 
-    // Load A_qk row i and A_qb row i with causal mask (i >= j)
-    // These are small (C=16 elements each) so load into registers
-    float a_qk_row[16];
-    float a_qb_row[16];
-    #pragma unroll
-    for (int j = 0; j < C; j++) {
-        if (i >= j && j < valid_len) {
-            // A[i, j] = A[mat_base + i + j * C]
-            a_qk_row[j] = A_qk[mat_base + i + j * C];
-            a_qb_row[j] = A_qb[mat_base + i + j * C];
-        } else {
-            a_qk_row[j] = 0.0f;
-            a_qb_row[j] = 0.0f;
+    // ---- Sequential loop over C positions in this chunk ----
+    for (int i = 0; i < valid_len; i++) {
+        const int i_abs = chunk_start + i;
+        const int tok_offset_i = head_base + i_abs * token_stride;
+
+        // Step (a): Load qg[i, :] into smem (one element per thread, coalesced)
+        if (kk < K_dim) {
+            smem[kk] = qg[kk + tok_offset_i];
         }
-    }
 
-    // Compute output for each K element
-    for (int kk = 0; kk < K_dim; kk++) {
-        // Term 1: qg[i, kk] @ h[chunk] -> dot product over K dimension
-        // qg @ h produces a [K]-element vector per token position.
-        // For output element kk (the V dimension), we compute:
-        //   sum over k_inner: qg[i, k_inner] * h[k_inner, kk, head, chunk]
-        //
-        // Use pairwise summation for better numerical precision (K_dim=64 elements).
-        float pairs[64];
-        #pragma unroll 16
-        for (int k_inner = 0; k_inner < K_dim; k_inner++) {
-            const float qg_val = qg[k_inner + tok_offset];
-            const float h_val = h[k_inner * K_dim + kk + h_base];
-            pairs[k_inner] = qg_val * h_val;
-        }
-        // Pairwise reduce: 64 -> 32 -> 16 -> 8 -> 4 -> 2 -> 1
-        #pragma unroll
-        for (int stride = 32; stride >= 1; stride >>= 1) {
-            #pragma unroll
-            for (int idx = 0; idx < stride; idx++) {
-                pairs[idx] += pairs[idx + stride];
+        // Also load A_qk row i and A_qb row i into smem (threads 0..C-1 handle this)
+        if (kk < C) {
+            // Load with causal mask: only j <= i, and j < valid_len
+            float aqk_val = 0.0f;
+            float aqb_val = 0.0f;
+            if (kk <= i && kk < valid_len) {
+                // A[i, kk] = A[mat_base + i + kk * C]
+                aqk_val = A_qk[mat_base + i + kk * C];
+                aqb_val = A_qb[mat_base + i + kk * C];
             }
+            smem[64 + kk] = aqk_val;
+            smem[80 + kk] = aqb_val;
         }
-        float state_dot = pairs[0];
+        __syncthreads();
 
-        // Term 2: sum_j(A_qk[i,j] * v[j, kk]) for j in valid positions
+        // Step (b): dot = sum(qg[i, k] * h_col[k]) for k = 0..63
+        // This is entirely register-local: no cross-thread reduction needed.
+        float dot = 0.0f;
+        #pragma unroll
+        for (int k = 0; k < 64; k++) {
+            dot += smem[k] * h_col[k];
+        }
+
+        // Step (d): local_attn = sum(A_qk[i, j] * v[j, kk]) for j = 0..valid_len-1
         float local_attn = 0.0f;
         #pragma unroll
         for (int j = 0; j < C; j++) {
-            if (a_qk_row[j] != 0.0f) {
+            const float aqk = smem[64 + j];
+            if (aqk != 0.0f) {
                 const int j_abs = chunk_start + j;
-                const int j_tok = kk + i_h * K_dim + (bos + j_abs) * token_stride;
-                const float v_val = __half2float(v[j_tok]);
-                local_attn += a_qk_row[j] * v_val;
+                const float v_val = __half2float(v[kk + head_base + j_abs * token_stride]);
+                local_attn += aqk * v_val;
             }
         }
 
-        // Term 3: sum_j(A_qb[i,j] * v_new[j, kk]) for j in valid positions
+        // Step (e): wy_corr = sum(A_qb[i, j] * v_new[j, kk]) for j = 0..valid_len-1
         float wy_corr = 0.0f;
         #pragma unroll
         for (int j = 0; j < C; j++) {
-            if (a_qb_row[j] != 0.0f) {
+            const float aqb = smem[80 + j];
+            if (aqb != 0.0f) {
                 const int j_abs = chunk_start + j;
-                const int j_tok = kk + i_h * K_dim + (bos + j_abs) * token_stride;
-                const float vn_val = v_new[j_tok];
-                wy_corr += a_qb_row[j] * vn_val;
+                const float vn_val = v_new[kk + head_base + j_abs * token_stride];
+                wy_corr += aqb * vn_val;
             }
         }
 
-        // Combine all three terms and store as f16
-        const float result = state_dot + local_attn + wy_corr;
-        o[kk + tok_offset] = __float2half(result);
+        // Step (f): Combine and store as f16 — coalesced write
+        const float result = dot + local_attn + wy_corr;
+        o[kk + tok_offset_i] = __float2half(result);
+
+        __syncthreads();
     }
 }
 
@@ -1177,7 +1192,7 @@ hipError_t launch_fla_chunk_o(
     }
 
     dim3 grid(total_chunks, H, 1);
-    dim3 block(C);
+    dim3 block(K);  // Block=K=64: one thread per V/K-dimension element
 
     hipLaunchKernelGGL(kernel_fla_chunk_o, grid, block, 0, stream,
                        qg, v, v_new, A_qk, A_qb, h, o,
