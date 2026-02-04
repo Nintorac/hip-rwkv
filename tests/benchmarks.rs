@@ -735,6 +735,13 @@ struct LoadedModel {
     vocab_size: u32,
 }
 
+/// Persistent HIP model weights that can be reused across runtime configurations.
+struct HipWeights {
+    weights: std::sync::Arc<hip_rwkv::hip::Rwkv7Model>,
+    info: ModelInfo,
+    vocab_size: u32,
+}
+
 /// Create a wgpu context for the given model info
 async fn create_context(info: &ModelInfo) -> anyhow::Result<Context> {
     let instance = wgpu::Instance::default();
@@ -748,36 +755,61 @@ async fn create_context(info: &ModelInfo) -> anyhow::Result<Context> {
     Ok(context)
 }
 
-/// Load a model and create runtime
+/// Load HIP model weights from disk (expensive, do once per model).
+fn load_hip_weights(model_path: &str) -> anyhow::Result<HipWeights> {
+    use hip_rwkv::hip::Rwkv7Hip;
+
+    let model = Rwkv7Hip::load(model_path)
+        .map_err(|e| anyhow::anyhow!("HIP model load failed: {e:?}"))?;
+    let weights = model.model();
+
+    let file = std::fs::File::open(model_path)?;
+    let data = unsafe { memmap2::Mmap::map(&file)? };
+    let st = SafeTensors::deserialize(&data)?;
+    let info = Loader::info(&st)?;
+    let vocab_size = info.num_vocab as u32;
+
+    Ok(HipWeights { weights, info, vocab_size })
+}
+
+/// Create a HIP runtime from persistent weights (cheap, just allocates scratch buffers).
+fn create_hip_runtime(
+    hip_weights: &HipWeights,
+    batch_size: usize,
+    token_chunk_size: usize,
+) -> anyhow::Result<LoadedModel> {
+    use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig};
+
+    let chunk = if token_chunk_size == 0 { 1 } else { token_chunk_size };
+    let config = HipRuntimeConfig::new(chunk, batch_size);
+    let runtime = HipRuntime::from_model_arc(hip_weights.weights.clone(), config)
+        .map_err(|e| anyhow::anyhow!("HIP runtime init failed: {e:?}"))?;
+
+    Ok(LoadedModel {
+        context: None,
+        runtime: Box::new(runtime),
+        info: hip_weights.info.clone(),
+        vocab_size: hip_weights.vocab_size,
+    })
+}
+
+/// Load a model and create runtime (non-HIP backends, or one-shot HIP load).
 async fn load_model(
     model_path: &str,
     batch_size: usize,
     token_chunk_size: usize,
     backend_id: &str,
 ) -> anyhow::Result<LoadedModel> {
+    if backend_id == "hip" {
+        let hw = load_hip_weights(model_path)?;
+        return create_hip_runtime(&hw, batch_size, token_chunk_size);
+    }
+
     let file = TokioFile::open(model_path).await?;
     let data = unsafe { Mmap::map(&file)? };
     let st = SafeTensors::deserialize(&data)?;
     let info = Loader::info(&st)?;
     let vocab_size = info.num_vocab as u32;
-
-    if backend_id == "hip" {
-        use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig, Rwkv7Hip};
-
-        let model = Rwkv7Hip::load(model_path)
-            .map_err(|e| anyhow::anyhow!("HIP model load failed: {e:?}"))?;
-        let chunk = if token_chunk_size == 0 { 1 } else { token_chunk_size };
-        let config = HipRuntimeConfig::new(chunk, batch_size);
-        let runtime = HipRuntime::with_config(model, config)
-            .map_err(|e| anyhow::anyhow!("HIP runtime init failed: {e:?}"))?;
-
-        return Ok(LoadedModel {
-            context: None,
-            runtime: Box::new(runtime),
-            info,
-            vocab_size,
-        });
-    }
 
     let context = create_context(&info).await?;
     let builder = ModelBuilder::new(&context, st);
@@ -1099,6 +1131,40 @@ fn rwkv_version_str(version: ModelVersion) -> &'static str {
 // TESTS
 // =============================================================================
 
+/// Add a new results file entry to the dashboard index.json.
+/// Creates the index if it doesn't exist. Inserts at the front of the files array.
+fn update_dashboard_index(index_path: &Path, filename: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut index: serde_json::Value = if index_path.exists() {
+        serde_json::from_str(&fs::read_to_string(index_path)?)?
+    } else {
+        serde_json::json!({ "files": [], "generated": "", "count": 0 })
+    };
+
+    let files = index.get_mut("files")
+        .and_then(|v| v.as_array_mut())
+        .ok_or("index.json missing 'files' array")?;
+
+    // Don't add duplicates
+    let already_exists = files.iter().any(|f| {
+        f.get("name").and_then(|n| n.as_str()) == Some(filename)
+    });
+    if !already_exists {
+        let now = generate_timestamp_utc();
+        files.insert(0, serde_json::json!({
+            "name": filename,
+            "size": 0,
+            "modified": now,
+        }));
+    }
+
+    let count = files.len();
+    index["count"] = serde_json::json!(count);
+    index["generated"] = serde_json::json!(generate_timestamp_utc());
+
+    fs::write(index_path, serde_json::to_string_pretty(&index)?)?;
+    Ok(count)
+}
+
 /// Smoke test: load config, select profile, expand cases, and run benchmarks
 #[test]
 #[ignore]
@@ -1226,6 +1292,13 @@ async fn bench_smoke_async() {
         }
     };
 
+    // Add this file to the dashboard index.json
+    let index_path = output_dir.join("index.json");
+    match update_dashboard_index(&index_path, &output_filename) {
+        Ok(count) => println!("[bench] Updated dashboard index ({count} files)"),
+        Err(e) => eprintln!("[bench] Warning: failed to update dashboard index: {e}"),
+    }
+
     // Collect metadata and write run header
     let metadata = collect_run_metadata(None);
 
@@ -1280,12 +1353,14 @@ async fn bench_smoke_async() {
     }
     println!("[bench] Wrote run header");
 
-    // Group cases by model to avoid reloading
+    // Track current model to avoid redundant reloads.
+    // For HIP: weights persist across chunk/batch changes, only runtime is recreated.
     let mut current_model_path: Option<String> = None;
     let mut current_batch_size: Option<u32> = None;
     let mut current_backend_id: Option<String> = None;
     let mut current_token_chunk_size: Option<u32> = None;
     let mut loaded_model: Option<LoadedModel> = None;
+    let mut hip_weights: Option<HipWeights> = None;
 
     let mut total_executed = 0;
     let mut total_errors = 0;
@@ -1302,47 +1377,85 @@ async fn bench_smoke_async() {
             }
         };
 
-        // Check if we need to reload the model (different model, batch size, or chunk size)
-        let need_reload = current_model_path.as_ref() != Some(&case.model.path)
-            || current_batch_size != Some(case.batch_size)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id)
+        // Check what changed
+        let model_changed = current_model_path.as_ref() != Some(&case.model.path)
+            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
+        let config_changed = current_batch_size != Some(case.batch_size)
             || current_token_chunk_size != Some(case.token_chunk_size);
 
-        if need_reload {
-            println!(
-                "\n[bench] Loading model: {} (batch={})",
-                case.model.model_name, case.batch_size
-            );
-
-            // Check model file exists
+        if model_changed || config_changed {
             if !Path::new(&case.model.path).exists() {
                 eprintln!("[bench] Model file not found: {}", case.model.path);
                 total_errors += 1;
                 continue;
             }
 
-            match load_model(
-                &case.model.path,
-                case.batch_size as usize,
-                case.token_chunk_size as usize,
-                &case.backend.backend_id,
-            )
-            .await
-            {
-                Ok(model) => {
-                    println!("[bench] Model loaded: {:?}", model.info.version);
-                    current_model_path = Some(case.model.path.clone());
-                    current_batch_size = Some(case.batch_size);
-                    current_backend_id = Some(case.backend.backend_id.clone());
-                    current_token_chunk_size = Some(case.token_chunk_size);
-                    loaded_model = Some(model);
+            if case.backend.backend_id == "hip" {
+                // Only reload weights from disk when model path changes
+                if model_changed {
+                    println!(
+                        "\n[bench] Loading weights: {} (from disk)",
+                        case.model.model_name
+                    );
+                    match load_hip_weights(&case.model.path) {
+                        Ok(hw) => {
+                            println!("[bench] Weights loaded: {:?}", hw.info.version);
+                            hip_weights = Some(hw);
+                        }
+                        Err(e) => {
+                            eprintln!("[bench] Failed to load weights: {}", e);
+                            total_errors += 1;
+                            continue;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[bench] Failed to load model: {}", e);
-                    total_errors += 1;
-                    continue;
+                // Recreate runtime (cheap) for new batch/chunk config
+                let hw = match &hip_weights {
+                    Some(hw) => hw,
+                    None => { total_errors += 1; continue; }
+                };
+                println!(
+                    "[bench] Creating runtime: batch={}, chunk={}",
+                    case.batch_size, case.token_chunk_size
+                );
+                match create_hip_runtime(hw, case.batch_size as usize, case.token_chunk_size as usize) {
+                    Ok(model) => {
+                        loaded_model = Some(model);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to create runtime: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
+                }
+            } else {
+                println!(
+                    "\n[bench] Loading model: {} (batch={})",
+                    case.model.model_name, case.batch_size
+                );
+                match load_model(
+                    &case.model.path,
+                    case.batch_size as usize,
+                    case.token_chunk_size as usize,
+                    &case.backend.backend_id,
+                )
+                .await
+                {
+                    Ok(model) => {
+                        println!("[bench] Model loaded: {:?}", model.info.version);
+                        loaded_model = Some(model);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to load model: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
                 }
             }
+            current_model_path = Some(case.model.path.clone());
+            current_batch_size = Some(case.batch_size);
+            current_backend_id = Some(case.backend.backend_id.clone());
+            current_token_chunk_size = Some(case.token_chunk_size);
         }
 
         let loaded = match &loaded_model {
@@ -1438,12 +1551,13 @@ async fn bench_smoke_async() {
     // =========================================================================
     println!("\n--- Running prefill_uniform cases ---\n");
 
-    // Reset model tracking for prefill cases
+    // Reset model tracking for prefill cases (keep hip_weights if same model)
     current_model_path = None;
     current_batch_size = None;
     current_backend_id = None;
     current_token_chunk_size = None;
     loaded_model = None;
+    hip_weights = None;
 
     for case in &prefill_cases {
         let seq_len = match case.seq_len {
@@ -1457,47 +1571,85 @@ async fn bench_smoke_async() {
             }
         };
 
-        // Check if we need to reload the model (different model, batch size, or chunk size)
-        let need_reload = current_model_path.as_ref() != Some(&case.model.path)
-            || current_batch_size != Some(case.batch_size)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id)
+        // Check what changed
+        let model_changed = current_model_path.as_ref() != Some(&case.model.path)
+            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
+        let config_changed = current_batch_size != Some(case.batch_size)
             || current_token_chunk_size != Some(case.token_chunk_size);
 
-        if need_reload {
-            println!(
-                "\n[bench] Loading model: {} (batch={})",
-                case.model.model_name, case.batch_size
-            );
-
-            // Check model file exists
+        if model_changed || config_changed {
             if !Path::new(&case.model.path).exists() {
                 eprintln!("[bench] Model file not found: {}", case.model.path);
                 total_errors += 1;
                 continue;
             }
 
-            match load_model(
-                &case.model.path,
-                case.batch_size as usize,
-                case.token_chunk_size as usize,
-                &case.backend.backend_id,
-            )
-            .await
-            {
-                Ok(model) => {
-                    println!("[bench] Model loaded: {:?}", model.info.version);
-                    current_model_path = Some(case.model.path.clone());
-                    current_batch_size = Some(case.batch_size);
-                    current_backend_id = Some(case.backend.backend_id.clone());
-                    current_token_chunk_size = Some(case.token_chunk_size);
-                    loaded_model = Some(model);
+            if case.backend.backend_id == "hip" {
+                // Only reload weights from disk when model path changes
+                if model_changed {
+                    println!(
+                        "\n[bench] Loading weights: {} (from disk)",
+                        case.model.model_name
+                    );
+                    match load_hip_weights(&case.model.path) {
+                        Ok(hw) => {
+                            println!("[bench] Weights loaded: {:?}", hw.info.version);
+                            hip_weights = Some(hw);
+                        }
+                        Err(e) => {
+                            eprintln!("[bench] Failed to load weights: {}", e);
+                            total_errors += 1;
+                            continue;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[bench] Failed to load model: {}", e);
-                    total_errors += 1;
-                    continue;
+                // Recreate runtime (cheap) for new batch/chunk config
+                let hw = match &hip_weights {
+                    Some(hw) => hw,
+                    None => { total_errors += 1; continue; }
+                };
+                println!(
+                    "[bench] Creating runtime: batch={}, chunk={}",
+                    case.batch_size, case.token_chunk_size
+                );
+                match create_hip_runtime(hw, case.batch_size as usize, case.token_chunk_size as usize) {
+                    Ok(model) => {
+                        loaded_model = Some(model);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to create runtime: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
+                }
+            } else {
+                println!(
+                    "\n[bench] Loading model: {} (batch={})",
+                    case.model.model_name, case.batch_size
+                );
+                match load_model(
+                    &case.model.path,
+                    case.batch_size as usize,
+                    case.token_chunk_size as usize,
+                    &case.backend.backend_id,
+                )
+                .await
+                {
+                    Ok(model) => {
+                        println!("[bench] Model loaded: {:?}", model.info.version);
+                        loaded_model = Some(model);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to load model: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
                 }
             }
+            current_model_path = Some(case.model.path.clone());
+            current_batch_size = Some(case.batch_size);
+            current_backend_id = Some(case.backend.backend_id.clone());
+            current_token_chunk_size = Some(case.token_chunk_size);
         }
 
         let loaded = match &loaded_model {

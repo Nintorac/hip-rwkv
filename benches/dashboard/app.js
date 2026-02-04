@@ -72,6 +72,7 @@
         setupDropZone();
         setupTabs();
         setupExportButton();
+        setupReloadButton();
         setupServerFiles();
 
         console.log('[dashboard] Initialization complete');
@@ -94,6 +95,7 @@
                 models: document.getElementById('stat-models')
             },
             exportBtn: document.getElementById('export-btn'),
+            reloadBtn: document.getElementById('reload-btn'),
             // Server files section
             serverFilesSection: document.getElementById('server-files-section'),
             serverFilesContent: document.getElementById('server-files-content'),
@@ -182,6 +184,68 @@
         });
 
         console.log('[dashboard] Export button configured');
+    }
+
+    /**
+     * Set up reload button — re-fetches manifest and reloads all currently
+     * loaded source files, preserving filters and current view.
+     */
+    function setupReloadButton() {
+        const reloadBtn = elements.reloadBtn;
+        if (!reloadBtn) return;
+
+        reloadBtn.addEventListener('click', async () => {
+            reloadBtn.disabled = true;
+            reloadBtn.textContent = 'Reloading...';
+
+            try {
+                // Refresh the manifest to pick up new files
+                await fetchServerFiles();
+
+                // Collect unique source files from currently loaded data
+                const loadedFiles = new Set();
+                state.data.measures.forEach(m => {
+                    if (m._sourceFile) loadedFiles.add(m._sourceFile);
+                });
+
+                if (loadedFiles.size === 0 && serverFilesState.files.length > 0) {
+                    // Nothing loaded yet — load all available files
+                    for (const f of serverFilesState.files) {
+                        loadedFiles.add(f.name);
+                    }
+                }
+
+                // Clear existing data but preserve filter selections
+                const savedFilters = JSON.parse(JSON.stringify(state.filters));
+                clearData();
+
+                // Reload each file (merge mode)
+                const prevMerge = config.mergeOnLoad;
+                config.mergeOnLoad = true;
+                for (const filename of loadedFiles) {
+                    await loadServerFile(filename);
+                }
+                config.mergeOnLoad = prevMerge;
+
+                // Restore filter selections (only keep values that still exist)
+                for (const [key, values] of Object.entries(savedFilters)) {
+                    if (values && state.filterOptions[key]) {
+                        const validValues = values.filter(v =>
+                            state.filterOptions[key].some(opt =>
+                                String(opt) === String(v)
+                            )
+                        );
+                        state.filters[key] = validValues.length > 0 ? validValues : null;
+                    }
+                }
+
+                updateFilters();
+                render();
+            } finally {
+                reloadBtn.disabled = false;
+                reloadBtn.textContent = 'Reload';
+            }
+        });
     }
 
     // =========================================================================
@@ -2450,7 +2514,12 @@
             return;
         }
 
-        const xValues = [...new Set(filtered.map(m => m[config.xKey]).filter(v => v != null))];
+        const resolveField = (m, key) => {
+            if (key === 'token_chunk_size') return m.token_chunk_size_effective ?? m.token_chunk_size_requested ?? m.token_chunk_size;
+            return m[key];
+        };
+
+        const xValues = [...new Set(filtered.map(m => resolveField(m, config.xKey)).filter(v => v != null))];
         if (xValues.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -2464,7 +2533,7 @@
         // Group data by series key: batch_size + model_name + backend_id + chunk_size
         const seriesMap = new Map();
         filtered.forEach(m => {
-            const xValue = m[config.xKey];
+            const xValue = resolveField(m, config.xKey);
             const yValue = m[config.yKey];
             if (xValue == null || yValue == null) return;
 
@@ -2616,6 +2685,7 @@
         const xScale = config.xType === 'numeric'
             ? (useLogX
                 ? d3.scaleLog()
+                    .base(2)
                     .domain([minPositive, maxSeqLen])
                     .range([0, width])
                 : d3.scaleLinear()
@@ -2695,7 +2765,9 @@
         // X axis
         const xAxisBuilder = config.xType === 'numeric'
             ? (useLogX
-                ? d3.axisBottom(xScale).ticks(6, '~g')
+                ? d3.axisBottom(xScale)
+                    .tickValues(xValues.sort((a, b) => a - b))
+                    .tickFormat(d => d >= 1024 ? `${d / 1024}k` : d.toString())
                 : d3.axisBottom(xScale)
                     .tickValues(xValues)
                     .tickFormat(config.xFormatter || (d => d.toString())))

@@ -178,6 +178,49 @@ impl HipRuntime {
         })
     }
 
+    /// Create a new HipRuntime from shared model weights and configuration.
+    ///
+    /// This allows reusing already-loaded weights across multiple runtime
+    /// configurations without reloading from disk.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let model = Rwkv7Hip::load("model.st")?;
+    /// let weights = model.model(); // Arc<Rwkv7Model>
+    ///
+    /// // Create runtimes with different configs, reusing the same weights
+    /// let rt1 = HipRuntime::from_model_arc(weights.clone(), HipRuntimeConfig::new(256, 4))?;
+    /// let rt2 = HipRuntime::from_model_arc(weights.clone(), HipRuntimeConfig::new(1024, 8))?;
+    /// ```
+    pub fn from_model_arc(
+        shared_model: Arc<Rwkv7Model>,
+        config: HipRuntimeConfig,
+    ) -> Result<Self, super::HipErrorKind> {
+        let num_batch = config.batch_size;
+        let chunk_size = config.max_prefill_chunk;
+
+        let prefill_config = PrefillConfig {
+            max_prefill_chunk: config.max_prefill_chunk,
+            batch_size: config.batch_size,
+            fla_chunk_size: config.fla_chunk_size,
+        };
+        let prefill = HipPrefill::new(shared_model.clone(), prefill_config)?;
+
+        let decode_config = DecodeConfig::new(config.batch_size);
+        let decode = HipDecode::new(shared_model.clone(), decode_config)?;
+
+        Ok(Self {
+            model: shared_model,
+            inner: Mutex::new(HipRuntimeInner {
+                prefill,
+                decode,
+                needs_state_transfer: false,
+            }),
+            num_batch,
+            chunk_size,
+        })
+    }
+
     /// Create a new HipRuntime with default configuration.
     ///
     /// Uses chunk_size=256 and the specified batch size.

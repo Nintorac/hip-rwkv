@@ -518,6 +518,7 @@ body {
     align-items: center;
 }
 
+.reload-btn,
 .export-btn {
     padding: var(--space-sm) var(--space-md);
     font-size: 13px;
@@ -530,6 +531,7 @@ body {
     transition: all 0.15s ease;
 }
 
+.reload-btn:hover,
 .export-btn:hover:not(:disabled) {
     background-color: var(--accent-subtle);
     border-color: var(--accent);
@@ -541,6 +543,7 @@ body {
     cursor: not-allowed;
 }
 
+.reload-btn:active,
 .export-btn:active:not(:disabled) {
     background-color: var(--accent);
     color: white;
