@@ -875,20 +875,25 @@ hipError_t launch_fla_wy_repr(
 // Block: dim3(K=64)               — one thread per V-column of the state.
 //
 // Thread v (0..K-1) owns one column of the [K, V]==[K, K] state matrix
-// in registers (h_col[K]).  Shared memory is used for per-position data
-// that all threads need: w_row, kg_col, bg_col, g_last.
+// in registers (h_col[K]).  Two shared memory buffers (smem_a, smem_b) are
+// used in a double-buffered pattern to overlap loads with computation,
+// reducing barrier count from 6 to 4 per position.
 //
 // Per chunk i_t (sequential over chunks for this sequence):
 //   1. Store current state to fla_h:
 //      fla_h[k, v, h, chunk_offset + i_t] = h_col[k]
 //   2. For each sub-chunk position i (0..C-1) inside the chunk:
-//      a. Compute b_v2[v] = sum_k( w_wy[i,k] * h_col[k] ) + u_wy[i,v]
-//      b. Store v_new[i,v] = b_v2[v]
-//      c. Accumulate hc_col[k] += kg[k,i] * v_orig[i,v]
-//                                + bg[k,i] * b_v2[v]
+//      a. Load w_wy -> smem_a, BARRIER
+//      b. Dot product from smem_a; load kg -> smem_b, BARRIER
+//      c. Accumulate kg from smem_b; load bg -> smem_a, BARRIER
+//      d. Accumulate bg from smem_a (no trailing barrier -- next iter's
+//         BARRIER at step (a) ensures all smem_a reads complete first)
 //   3. Decay and update:
 //      g_last = gi at last valid position in chunk
 //      h_col[k] = h_col[k] * exp(g_last[k]) + hc_col[k]
+//
+// Barrier count: 4 per position x C positions + 2 for g_last = 4*16+2 = 66
+// (down from 6*16+2 = 98 with single-buffer approach)
 //
 // After all chunks: write final state to state_out.
 //
@@ -900,7 +905,7 @@ hipError_t launch_fla_wy_repr(
 // Reference: repos/flash-linear-attention/fla/ops/generalized_delta_rule/dplr/chunk_h_fwd.py
 // ============================================================================
 
-__global__ __launch_bounds__(64, 2)
+__global__ __launch_bounds__(64, 4)
 void kernel_fla_chunk_h(
     const float*  __restrict__ kg,             // [K, H, T, B] decay-scaled key (f32)
     const float*  __restrict__ bg,             // [K, H, T, B] decay-scaled b   (f32)
@@ -948,9 +953,12 @@ void kernel_fla_chunk_h(
         h_col[k] = state[k * K_dim + v_col + state_base];
     }
 
-    // Shared memory for data broadcast to all threads:
-    //   smem[0..63]  — w_row / kg_col / bg_col / g_last (reused per position)
-    __shared__ float smem[64];
+    // Double-buffered shared memory for overlapping loads with computation.
+    // smem_a and smem_b alternate roles: while one is being read for computation,
+    // the other can be loaded with the next data.
+    // Total: 128 floats = 512 bytes (negligible LDS footprint).
+    __shared__ float smem_a[64];
+    __shared__ float smem_b[64];
 
     // ---- Sequential loop over chunks ----
     for (int i_t = 0; i_t < n_chunks; i_t++) {
@@ -973,79 +981,96 @@ void kernel_fla_chunk_h(
             hc_col[k] = 0.0f;
         }
 
-        // Step 2 & 3: Process each position in the chunk
+        // Step 2 & 3: Process each position in the chunk using double-buffered smem.
+        //
+        // Per position, the pattern is:
+        //   BARRIER [A]:  protect smem_a from prior Phase 4 reads
+        //   Phase 1: Load w_wy -> smem_a
+        //   BARRIER [A2]: smem_a ready with w_wy
+        //   Phase 2: Dot from smem_a; load kg -> smem_b
+        //   BARRIER [B]:  smem_b ready with kg
+        //   Phase 3: Accumulate kg from smem_b; load bg -> smem_a
+        //   BARRIER [C]:  smem_a ready with bg
+        //   Phase 4: Accumulate bg from smem_a (no trailing barrier)
+        //
+        // Double-buffering eliminates 2 barriers per position vs single-buffer:
+        // kg load into smem_b overlaps with smem_a dot product (saves 1 barrier),
+        // bg load into smem_a overlaps with smem_b kg accumulation (saves 1 barrier).
+        //
+        // 4 barriers per position x C=16 = 64 barriers (down from 96 single-buffer).
         const int valid_len = min(C, T - chunk_start);
         for (int i_pos = 0; i_pos < valid_len; i_pos++) {
             const int t_abs = chunk_start + i_pos;    // position within sequence
             const int tok_offset = (bos + t_abs) * token_stride + i_h * K_dim;
 
-            // ---- Compute b_v2[v_col] = sum_k( w_wy[pos,k] * h_col[k] ) + u_wy[pos,v_col] ----
-            // Load w_row[k] into shared memory (one element per thread)
-            // w_wy per-token layout: w_wy[k, h, t, b] = w_wy[k + h*K + t*H*K]
-            if (v_col < K_dim) {
-                smem[v_col] = w_wy[v_col + tok_offset];
-            }
-            __syncthreads();
+            // ---- Phase 1: Load w_wy -> smem_a ----
+            // BARRIER [A] ensures previous iteration's Phase 4 reads of smem_a
+            // are complete before we overwrite it. For the first position this
+            // is a no-op sync (no prior reads to protect).
+            __syncthreads();  // BARRIER [A]: protect smem_a from prior Phase 4
+            smem_a[v_col] = w_wy[v_col + tok_offset];
+            __syncthreads();  // BARRIER [A2]: smem_a ready with w_wy
 
+            // ---- Phase 2: Dot product from smem_a; load kg -> smem_b ----
             float dot = 0.0f;
             #pragma unroll
             for (int k = 0; k < 64; k++) {
-                dot += smem[k] * h_col[k];
+                dot += smem_a[k] * h_col[k];
             }
 
-            // u_wy has the same per-token layout, using v_col as the K-element index
-            // (since K == V == 64, the layout is identical for the v dimension)
             float b_v2 = dot + u_wy[v_col + tok_offset];
 
-            // Store v_new
+            // Store v_new (global memory write, no smem conflict)
             v_new[v_col + tok_offset] = b_v2;
-            __syncthreads();
 
-            // ---- Accumulate hc_col ----
-            // Load kg[:, pos] into shared memory
-            if (v_col < K_dim) {
-                smem[v_col] = kg[v_col + tok_offset];
-            }
-            __syncthreads();
+            // Overlap: load kg into smem_b while dot product was computed from smem_a.
+            // smem_a reads for the dot product are done (all threads read smem_a above).
+            // BARRIER [A2] already ensured smem_a was fully written before reads.
+            // smem_b was last written in the PREVIOUS iteration's Phase 2 (or never).
+            // BARRIER [B] of the previous iteration ensured all smem_b reads in Phase 3
+            // are done before we get here. But for the first iteration, smem_b is unused.
+            smem_b[v_col] = kg[v_col + tok_offset];
+            __syncthreads();  // BARRIER [B]: smem_b ready with kg
 
-            // v_in is f16 per-token: v_in[v_col + tok_offset]
+            // ---- Phase 3: Accumulate kg from smem_b; load bg -> smem_a ----
             float v_val = __half2float(v_in[v_col + tok_offset]);
 
-            // hc_col[k] += kg[k, pos] * v_val
             #pragma unroll
             for (int k = 0; k < 64; k++) {
-                hc_col[k] += smem[k] * v_val;
+                hc_col[k] += smem_b[k] * v_val;
             }
-            __syncthreads();
 
-            // Load bg[:, pos] into shared memory
-            if (v_col < K_dim) {
-                smem[v_col] = bg[v_col + tok_offset];
-            }
-            __syncthreads();
+            // Overlap: load bg into smem_a while kg accumulation used smem_b.
+            // smem_a was last read in Phase 2 (dot product). BARRIER [B] above
+            // ensures all threads completed Phase 2 before reaching here, so
+            // smem_a reads are done and we can safely overwrite.
+            smem_a[v_col] = bg[v_col + tok_offset];
+            __syncthreads();  // BARRIER [C]: smem_a ready with bg
 
-            // hc_col[k] += bg[k, pos] * b_v2
+            // ---- Phase 4: Accumulate bg from smem_a ----
             #pragma unroll
             for (int k = 0; k < 64; k++) {
-                hc_col[k] += smem[k] * b_v2;
+                hc_col[k] += smem_a[k] * b_v2;
             }
-            __syncthreads();
+            // No trailing barrier needed here: BARRIER [A] at the start of
+            // the next iteration protects these smem_a reads.
         }
 
         // Step 4: Decay and update
         // g_last = gi at last valid position in chunk
+        // Barrier protects Phase 4's smem_a reads before overwriting with g_last.
+        __syncthreads();  // ensure Phase 4 reads of smem_a are complete
         const int last_idx = min((i_t + 1) * C, T) - 1;
         const int last_tok_offset = (bos + last_idx) * token_stride + i_h * K_dim;
-        if (v_col < K_dim) {
-            smem[v_col] = gi[v_col + last_tok_offset];
-        }
-        __syncthreads();
+        smem_a[v_col] = gi[v_col + last_tok_offset];
+        __syncthreads();  // smem_a ready with g_last
 
         #pragma unroll
         for (int k = 0; k < 64; k++) {
-            h_col[k] = h_col[k] * expf(smem[k]) + hc_col[k];
+            h_col[k] = h_col[k] * expf(smem_a[k]) + hc_col[k];
         }
-        __syncthreads();
+        // No trailing barrier needed: next chunk's h_out store doesn't use smem,
+        // and the position loop starts with BARRIER [A] which syncs all threads.
     }
 
     // ---- Write final state ----
