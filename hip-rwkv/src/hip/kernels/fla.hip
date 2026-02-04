@@ -647,13 +647,26 @@ void kernel_fla_wy_inv(
 // v is f16 [K, H, T, B] (original value tensor).
 // w_wy and u_wy are f32 [K, H, T, B] outputs.
 //
-// Grid:  dim3(total_chunks, H, 1)
-// Block: dim3(C=16) (one thread per row i within chunk)
+// PARALLELISM STRATEGY: Block=K=64, sequential over C=16 rows.
 //
-// Each thread computes one row of w and u across all K dimensions.
+// Each thread kk (0..K-1=63) owns one column of the K dimension.
+// The two CxC matrices (A_ab_inv and compound) are loaded into LDS once,
+// then for each output row i (0..C-1):
+//   a. Broadcast inv_coeff[j] and compound_coeff[j] from LDS (same for all threads)
+//   b. Each thread kk loads ag[j, kk] and v[j, kk] -- coalesced!
+//   c. Accumulate w_val += inv_coeff * ag_val, u_val += compound_coeff * v_val
+//   d. Store w_wy[i, kk] and u_wy[i, kk] -- coalesced
+//
+// Benefits over the old block=C=16 design:
+//   - 64 threads = 2 full wave32 wavefronts (was 16 = half a wave, 50% SIMD waste)
+//   - All memory accesses coalesced (consecutive threads access consecutive K elements)
+//   - No per-thread serial K loop (was K=64 serial FMA per thread)
+//
+// Grid:  dim3(total_chunks, H, 1)
+// Block: dim3(K=64) (one thread per K-dimension element)
 // ============================================================================
 
-__global__ __launch_bounds__(16, 16)
+__global__ __launch_bounds__(64, 8)
 void kernel_fla_wy_wu(
     const float*  __restrict__ A_ab_inv,        // [C, C, H, total_chunks]
     const float*  __restrict__ A_ak,            // [C, C, H, total_chunks]
@@ -669,10 +682,10 @@ void kernel_fla_wy_wu(
     int C                                       // chunk_size (16)
 ) {
     const int chunk_flat = blockIdx.x;
-    const int h = blockIdx.y;
-    const int i = threadIdx.x;   // row index within chunk (0..C-1)
+    const int i_h = blockIdx.y;            // which head (0..H-1)
+    const int kk = threadIdx.x;            // K-dimension element (0..K-1)
 
-    if (h >= H || i >= C) return;
+    if (i_h >= H || kk >= K_dim) return;
 
     // Resolve chunk -> sequence mapping
     const int seq_id      = chunk_indices[chunk_flat * 2];
@@ -682,114 +695,120 @@ void kernel_fla_wy_wu(
     const int bos = batch_offsets[seq_id];
     const int T   = cu_seqlens[seq_id + 1] - cu_seqlens[seq_id];
 
-    // Absolute position of row i in the sequence
-    const int i_abs = local_chunk * C + i;
-
     // Token stride in [K, H, T, B] layout
     const int token_stride = H * K_dim;
 
-    // Matrix base: [C, C, H, total_chunks], element (i, j, h, chunk)
-    const int mat_base = h * C * C + chunk_flat * H * C * C;
-
-    // Shared memory for A_ab_inv and compound matrices
-    // smem_inv[row][col] = A_ab_inv[row, col]
-    // smem_compound[row][col] = compound[row, col]
-    __shared__ float smem_inv[16][16];
-    __shared__ float smem_compound[16][16];
-
-    // Step 1: Load row i of A_ab_inv with lower triangular mask (i >= j)
-    float inv_row[16];
-    #pragma unroll
-    for (int jj = 0; jj < C; jj++) {
-        float val = 0.0f;
-        if (i >= jj) {
-            // A_ab_inv[i, jj, h, chunk] = A_ab_inv[mat_base + i + jj*C]
-            val = A_ab_inv[mat_base + i + jj * C];
-        }
-        inv_row[jj] = val;
-        smem_inv[i][jj] = val;
-    }
-
-    // Step 2: Load row i of A_ak with strict lower triangular mask (i > j)
-    float ak_row[16];
-    #pragma unroll
-    for (int jj = 0; jj < C; jj++) {
-        float val = 0.0f;
-        if (i > jj) {
-            val = A_ak[mat_base + i + jj * C];
-        }
-        ak_row[jj] = val;
-    }
-    __syncthreads();
-
-    // Step 3: Compute compound[i, j] = sum_m(A_ab_inv[i, m] * A_ak[m, j])
-    // We need A_ak columns, which requires access to other threads' rows.
-    // Load A_ak into shared memory for this purpose.
-    __shared__ float smem_ak[16][16];
-    #pragma unroll
-    for (int jj = 0; jj < C; jj++) {
-        smem_ak[i][jj] = ak_row[jj];
-    }
-    __syncthreads();
-
-    // Now compute compound row i: compound[i, j] = sum_m inv_row[m] * smem_ak[m][j]
-    // Since A_ab_inv is lower triangular and A_ak is strict lower triangular,
-    // compound is strict lower triangular.
-    float compound_row[16];
-    #pragma unroll
-    for (int jj = 0; jj < C; jj++) {
-        float sum = 0.0f;
-        #pragma unroll
-        for (int m = 0; m < C; m++) {
-            sum += inv_row[m] * smem_ak[m][jj];
-        }
-        compound_row[jj] = sum;
-        smem_compound[i][jj] = sum;
-    }
-    __syncthreads();
-
-    // Step 4: If row i is beyond sequence length, write zeros and return.
-    if (i_abs >= T) {
-        // Write zeros for this row across all K
-        const int row_base = h * K_dim + (bos + i_abs) * token_stride;
-        for (int kk = 0; kk < K_dim; kk++) {
-            // Only write if within allocated buffer
-            // For partial chunks, rows beyond T should remain zero.
-            // But since i_abs >= T, we don't actually write to valid positions.
-            // The buffers are initialized or don't matter beyond T.
-        }
-        return;
-    }
-
-    // Base offset for per-token access: head h, element k, at position (bos + chunk_start)
+    // Chunk boundaries
     const int chunk_start = local_chunk * C;
-    const int valid_len = (T - chunk_start < C) ? (T - chunk_start) : C;
+    const int valid_len = min(C, T - chunk_start);
 
-    // Step 5: Compute w[i, k] = sum_j(A_ab_inv[i, j] * ag[j, k]) for j=0..valid_len-1
-    //         Compute u[i, k] = sum_j(compound[i, j]  * v[j, k])  for j=0..valid_len-1
-    for (int kk = 0; kk < K_dim; kk++) {
+    // Early exit: entire chunk beyond sequence
+    if (chunk_start >= T) return;
+
+    // Matrix base: [C, C, H, total_chunks], element (i, j, h, chunk)
+    const int mat_base = i_h * C * C + chunk_flat * H * C * C;
+
+    // Shared memory for A_ab_inv and compound matrices (16x16 each)
+    // Plus one row of coefficients for broadcast (16 inv + 16 compound = 32 floats)
+    // Total LDS: 16*16 + 16*16 + 32 = 544 floats = 2176 bytes
+    __shared__ float smem_inv[16][16];
+    __shared__ float smem_ak[16][16];
+    __shared__ float smem_coeffs[32];  // [0..15] = inv_row, [16..31] = compound_row
+
+    // Step 1: Cooperatively load A_ab_inv and A_ak into LDS.
+    // 64 threads loading 16x16 = 256 elements each: 4 elements per thread.
+    // Layout: column-major A[i, j] = A[mat_base + i + j*C]
+    // We flatten to linear index and map back.
+    {
+        const int total_elems = C * C;  // 256
+        const int elems_per_thread = (total_elems + 63) / 64;  // 4
+        for (int e = 0; e < elems_per_thread; e++) {
+            const int lin = kk + e * 64;
+            if (lin < total_elems) {
+                const int row = lin % C;  // i (row index)
+                const int col = lin / C;  // j (col index)
+                // A_ab_inv: lower triangular (i >= j)
+                float inv_val = 0.0f;
+                if (row >= col) {
+                    inv_val = A_ab_inv[mat_base + row + col * C];
+                }
+                smem_inv[row][col] = inv_val;
+                // A_ak: strict lower triangular (i > j)
+                float ak_val = 0.0f;
+                if (row > col) {
+                    ak_val = A_ak[mat_base + row + col * C];
+                }
+                smem_ak[row][col] = ak_val;
+            }
+        }
+    }
+    __syncthreads();
+
+    // Step 2: Compute compound = A_ab_inv @ A_ak in-place into smem_ak.
+    // compound[i][j] = sum_m(smem_inv[i][m] * smem_ak[m][j])
+    // We need a separate buffer since we read smem_ak while writing.
+    // Use smem_ak as read-only source, write compound into a temp buffer,
+    // then copy back. But we can avoid extra buffer by computing compound
+    // on-the-fly per row during the main loop (Step 3).
+    //
+    // Actually: we compute compound rows lazily per row i in the main loop,
+    // using smem_inv and smem_ak which are both fully loaded. This avoids
+    // needing a third 16x16 shared memory buffer.
+
+    // Base offset for head h at sequence start
+    const int head_base = i_h * K_dim + bos * token_stride;
+
+    // Step 3: Sequential loop over C output rows
+    for (int i = 0; i < valid_len; i++) {
+        const int i_abs = chunk_start + i;
+        const int tok_offset_i = head_base + i_abs * token_stride;
+
+        // Step 3a: Compute and broadcast row i of A_ab_inv and compound.
+        // Threads 0..C-1 each compute one element of the compound row.
+        if (kk < C) {
+            // inv_coeff = smem_inv[i][kk] (already loaded)
+            smem_coeffs[kk] = smem_inv[i][kk];
+
+            // compound[i][kk] = sum_m(smem_inv[i][m] * smem_ak[m][kk])
+            float compound_val = 0.0f;
+            #pragma unroll
+            for (int m = 0; m < 16; m++) {
+                compound_val += smem_inv[i][m] * smem_ak[m][kk];
+            }
+            smem_coeffs[16 + kk] = compound_val;
+        }
+        __syncthreads();
+
+        // Step 3b: Each thread kk accumulates w_val and u_val across j
         float w_val = 0.0f;
         float u_val = 0.0f;
 
         #pragma unroll
-        for (int jj = 0; jj < C; jj++) {
-            const int j_abs = chunk_start + jj;
-            if (j_abs < T) {
-                // ag[kk, h, j_abs+bos, 0] = ag[kk + h*K + (bos+j_abs)*H*K]
-                const int tok_idx = kk + h * K_dim + (bos + j_abs) * token_stride;
+        for (int j = 0; j < 16; j++) {
+            if (j < valid_len) {
+                const float inv_coeff = smem_coeffs[j];
+                const float compound_coeff = smem_coeffs[16 + j];
 
-                const float ag_val = ag[tok_idx];
-                const float v_val  = __half2float(v[tok_idx]);
+                // Only do work if at least one coefficient is non-zero
+                // (triangular structure means many are zero)
+                if (inv_coeff != 0.0f || compound_coeff != 0.0f) {
+                    const int j_abs = chunk_start + j;
+                    const int tok_idx = kk + head_base + j_abs * token_stride;
 
-                w_val += inv_row[jj] * ag_val;
-                u_val += compound_row[jj] * v_val;
+                    const float ag_val = ag[tok_idx];
+                    const float v_val  = __half2float(v[tok_idx]);
+
+                    w_val += inv_coeff * ag_val;
+                    u_val += compound_coeff * v_val;
+                }
             }
         }
 
-        // Store w_wy[kk, h, bos+i_abs, 0] and u_wy[kk, h, bos+i_abs, 0]
-        const int out_idx = kk + h * K_dim + (bos + i_abs) * token_stride;
-        w_wy[out_idx] = w_val;
-        u_wy[out_idx] = u_val;
+        // Step 3c: Store w_wy and u_wy -- coalesced (thread kk writes element kk)
+        w_wy[kk + tok_offset_i] = w_val;
+        u_wy[kk + tok_offset_i] = u_val;
+
+        __syncthreads();
     }
 }
 
@@ -831,10 +850,10 @@ hipError_t launch_fla_wy_repr(
         if (err != hipSuccess) return err;
     }
 
-    // Part B: Compute w and u
+    // Part B: Compute w and u (Block=K=64: one thread per K-dimension element)
     {
         dim3 grid(total_chunks, H, 1);
-        dim3 block(C);
+        dim3 block(K);
 
         hipLaunchKernelGGL(kernel_fla_wy_wu, grid, block, 0, stream,
                            A_ab_inv, A_ak, ag, v, w_wy, u_wy,
