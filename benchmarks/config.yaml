@@ -134,6 +134,55 @@ profiles:
     warmup_runs: 0
     repeats: 1
 
+  prefill_chunk_sweep:
+    description: "Prefill sweep across chunk sizes 16/64/256/1024 with uniform and mixed scenarios."
+    models:
+      - rwkv7_g1a_0.1b
+      - rwkv7_g1c_2.9b
+    backends:
+      - hip
+    scenarios:
+      - prefill_uniform
+      - prefill_mixed
+    batch_sizes: [1, 4, 16]
+    token_chunk_sizes: [16, 64, 256, 1024]
+    decode_steps: []
+    seq_lens: [1, 8, 32, 64, 128, 256, 512, 1024, 2048]
+    warmup_runs: 1
+    repeats: 1
+
+  # Quick variant for testing
+  prefill_chunk_sweep_quick:
+    description: "Quick prefill chunk sweep (0.1b only, bs=1)."
+    models:
+      - rwkv7_g1a_0.1b
+    backends:
+      - hip
+    scenarios:
+      - prefill_uniform
+    batch_sizes: [1]
+    token_chunk_sizes: [16, 64, 256, 1024]
+    decode_steps: []
+    seq_lens: [1, 32, 256, 1024]
+    warmup_runs: 0
+    repeats: 1
+
+  prefill_single_chunk:
+    description: "Single-chunk prefill throughput at various chunk sizes (seq_len == chunk_size)."
+    models:
+      - rwkv7_g1c_2.9b
+      - rwkv7_g0b_13.3b
+    backends:
+      - hip
+    scenarios:
+      - prefill_uniform
+    batch_sizes: [1, 4, 16, 64, 128]
+    token_chunk_sizes: [64, 128, 256, 512, 1024, 2048, 4096]
+    decode_steps: []
+    seq_lens: [64, 128, 256, 512, 1024, 2048, 4096]
+    warmup_runs: 1
+    repeats: 1
+
   decode_dev:
     description: "Decode-only dev loop (very fast). 0.1b only, small batch sweep."
     models:

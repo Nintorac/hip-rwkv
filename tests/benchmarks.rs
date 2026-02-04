@@ -752,24 +752,35 @@ async fn create_context(info: &ModelInfo) -> anyhow::Result<Context> {
 async fn load_model(
     model_path: &str,
     batch_size: usize,
-    _token_chunk_size: usize,
+    token_chunk_size: usize,
     backend_id: &str,
 ) -> anyhow::Result<LoadedModel> {
-    if backend_id == "hip" {
-        anyhow::bail!("hip backend requested but hip-rwkv crate is not available in this context");
-    }
-
     let file = TokioFile::open(model_path).await?;
     let data = unsafe { Mmap::map(&file)? };
+    let st = SafeTensors::deserialize(&data)?;
+    let info = Loader::info(&st)?;
+    let vocab_size = info.num_vocab as u32;
 
-    let model = SafeTensors::deserialize(&data)?;
-    let info = Loader::info(&model)?;
+    if backend_id == "hip" {
+        use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig, Rwkv7Hip};
+
+        let model = Rwkv7Hip::load(model_path)
+            .map_err(|e| anyhow::anyhow!("HIP model load failed: {e:?}"))?;
+        let chunk = if token_chunk_size == 0 { 1 } else { token_chunk_size };
+        let config = HipRuntimeConfig::new(chunk, batch_size);
+        let runtime = HipRuntime::with_config(model, config)
+            .map_err(|e| anyhow::anyhow!("HIP runtime init failed: {e:?}"))?;
+
+        return Ok(LoadedModel {
+            context: None,
+            runtime: Box::new(runtime),
+            info,
+            vocab_size,
+        });
+    }
 
     let context = create_context(&info).await?;
-
-    let builder = ModelBuilder::new(&context, model);
-
-    let vocab_size = info.num_vocab as u32;
+    let builder = ModelBuilder::new(&context, st);
 
     let runtime: Box<dyn Runtime<Rnn>> = match info.version {
         ModelVersion::V4 => {
@@ -965,7 +976,6 @@ async fn run_prefill_benchmark(
         let mut gen = TokenGenerator::new(42, vocab_size);
         let batch_tokens = gen.generate_batch(batch_size, seq_len);
 
-        // Build input: each batch element has seq_len tokens
         let batches: Vec<RnnInputBatch> = batch_tokens
             .iter()
             .map(|tokens| {
@@ -975,6 +985,7 @@ async fn run_prefill_benchmark(
             .collect();
 
         let input = RnnInput::new(batches, token_chunk_size);
+        // Warmup: process just one chunk to prime GPU caches
         let _ = runtime
             .infer(input)
             .await
@@ -992,7 +1003,6 @@ async fn run_prefill_benchmark(
         let mut gen = TokenGenerator::new(42, vocab_size);
         let batch_tokens = gen.generate_batch(batch_size, seq_len);
 
-        // Build input: each batch element has seq_len tokens
         let batches: Vec<RnnInputBatch> = batch_tokens
             .iter()
             .map(|tokens| {
@@ -1001,24 +1011,27 @@ async fn run_prefill_benchmark(
             })
             .collect();
 
-        let input = RnnInput::new(batches, token_chunk_size);
+        let mut input = RnnInput::new(batches, token_chunk_size);
 
-        // Timed prefill call - single inference with full sequence
+        // Timed prefill: loop over all chunks until input is exhausted
+        let mut num_infer_calls = 0u32;
         let start = Instant::now();
-        let _ = runtime
-            .infer(input)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        while input.num_token() > 0 {
+            let (remaining, _) = runtime
+                .infer(input)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            input = remaining;
+            num_infer_calls += 1;
+        }
         let elapsed = start.elapsed();
 
         let prefill_total_ms = elapsed.as_secs_f64() * 1000.0;
         let total_prompt_tokens = batch_size * seq_len;
         let prefill_tok_per_s = total_prompt_tokens as f64 / elapsed.as_secs_f64();
 
-        // For uniform prefill with single-call, all batches complete at the same time
-        // so TTFT is the same for all batches
+        // For uniform prefill, all batches complete at the same time
         let ttft_ms_local = vec![prefill_total_ms; batch_size as usize];
-        let num_infer_calls = 1; // Single call for full prefill
 
         let result = PrefillResult {
             prefill_total_ms,
@@ -1271,6 +1284,7 @@ async fn bench_smoke_async() {
     let mut current_model_path: Option<String> = None;
     let mut current_batch_size: Option<u32> = None;
     let mut current_backend_id: Option<String> = None;
+    let mut current_token_chunk_size: Option<u32> = None;
     let mut loaded_model: Option<LoadedModel> = None;
 
     let mut total_executed = 0;
@@ -1288,10 +1302,11 @@ async fn bench_smoke_async() {
             }
         };
 
-        // Check if we need to reload the model (different model or batch size)
+        // Check if we need to reload the model (different model, batch size, or chunk size)
         let need_reload = current_model_path.as_ref() != Some(&case.model.path)
             || current_batch_size != Some(case.batch_size)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
+            || current_backend_id.as_ref() != Some(&case.backend.backend_id)
+            || current_token_chunk_size != Some(case.token_chunk_size);
 
         if need_reload {
             println!(
@@ -1319,6 +1334,7 @@ async fn bench_smoke_async() {
                     current_model_path = Some(case.model.path.clone());
                     current_batch_size = Some(case.batch_size);
                     current_backend_id = Some(case.backend.backend_id.clone());
+                    current_token_chunk_size = Some(case.token_chunk_size);
                     loaded_model = Some(model);
                 }
                 Err(e) => {
@@ -1426,6 +1442,7 @@ async fn bench_smoke_async() {
     current_model_path = None;
     current_batch_size = None;
     current_backend_id = None;
+    current_token_chunk_size = None;
     loaded_model = None;
 
     for case in &prefill_cases {
@@ -1440,10 +1457,11 @@ async fn bench_smoke_async() {
             }
         };
 
-        // Check if we need to reload the model (different model or batch size)
+        // Check if we need to reload the model (different model, batch size, or chunk size)
         let need_reload = current_model_path.as_ref() != Some(&case.model.path)
             || current_batch_size != Some(case.batch_size)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
+            || current_backend_id.as_ref() != Some(&case.backend.backend_id)
+            || current_token_chunk_size != Some(case.token_chunk_size);
 
         if need_reload {
             println!(
@@ -1471,6 +1489,7 @@ async fn bench_smoke_async() {
                     current_model_path = Some(case.model.path.clone());
                     current_batch_size = Some(case.batch_size);
                     current_backend_id = Some(case.backend.backend_id.clone());
+                    current_token_chunk_size = Some(case.token_chunk_size);
                     loaded_model = Some(model);
                 }
                 Err(e) => {
