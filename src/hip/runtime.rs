@@ -1189,6 +1189,7 @@ mod tests {
     }
 
     /// Numerically stable softmax
+    #[cfg(feature = "tokio")]
     fn stable_softmax(logits: &[f32]) -> Vec<f32> {
         let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp_vals: Vec<f32> = logits.iter().map(|x| (x - max_val).exp()).collect();

@@ -39,11 +39,13 @@ use std::path::Path;
 ///
 /// See: https://github.com/triton-lang/triton/issues/5283
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // Constants provided for different tensor comparison scenarios
 pub struct Tolerances {
     pub rtol: f32,
     pub atol: f32,
 }
 
+#[allow(dead_code)] // Constants provided for different tensor comparison scenarios
 impl Tolerances {
     /// BF16-appropriate tolerance for normalized activations (after layernorm, groupnorm, L2norm).
     /// Normalization can amplify input differences for low-variance groups, so we use

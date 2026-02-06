@@ -969,6 +969,7 @@ async fn run_decode_benchmark(
 #[derive(Debug)]
 struct PrefillBenchResults {
     /// Configuration used for this prefill run
+    #[allow(dead_code)] // Stored for debugging/future use
     pub config: PrefillUniformConfig,
     /// Results for each repeat
     pub repeats: Vec<PrefillResult>,
@@ -977,8 +978,10 @@ struct PrefillBenchResults {
     /// Mean throughput across repeats
     pub mean_tok_per_s: f64,
     /// Min throughput across repeats
+    #[allow(dead_code)] // Stored for debugging/future use
     pub min_tok_per_s: f64,
     /// Max throughput across repeats
+    #[allow(dead_code)] // Stored for debugging/future use
     pub max_tok_per_s: f64,
 }
 
