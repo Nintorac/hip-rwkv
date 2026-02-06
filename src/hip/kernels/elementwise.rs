@@ -19,6 +19,176 @@ use crate::hip::ffi::{
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
+// ============================================================================
+// Dual-precision macro generators
+// ============================================================================
+
+/// Generate f32 and f16 variants of a unary elementwise operation.
+macro_rules! dual_precision_unary {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            input: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_unary_op(input, output, stringify!($fn_f32))?;
+            unsafe {
+                check($launcher_f32(
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            input: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_unary_op(input, output, stringify!($fn_f16))?;
+            unsafe {
+                check($launcher_f16(
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
+/// Generate f32 and f16 variants of a binary elementwise operation.
+macro_rules! dual_precision_binary {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            a: &TensorHip<f32>,
+            b: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_binary_op(a, b, output, stringify!($fn_f32))?;
+            unsafe {
+                check($launcher_f32(
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    output.as_mut_ptr(),
+                    a.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            a: &TensorHip<f16>,
+            b: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_binary_op(a, b, output, stringify!($fn_f16))?;
+            unsafe {
+                check($launcher_f16(
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    output.as_mut_ptr(),
+                    a.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
+/// Generate f32 and f16 variants of a ternary elementwise operation (lerp).
+macro_rules! dual_precision_ternary {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            a: &TensorHip<f32>,
+            b: &TensorHip<f32>,
+            t: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_ternary_op(a, b, t, output, stringify!($fn_f32))?;
+            unsafe {
+                check($launcher_f32(
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    t.as_ptr(),
+                    output.as_mut_ptr(),
+                    a.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            a: &TensorHip<f16>,
+            b: &TensorHip<f16>,
+            t: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_ternary_op(a, b, t, output, stringify!($fn_f16))?;
+            unsafe {
+                check($launcher_f16(
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    t.as_ptr(),
+                    output.as_mut_ptr(),
+                    a.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
+/// Generate f32 and f16 variants of a broadcast operation.
+macro_rules! dual_precision_broadcast {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            input: &TensorHip<f32>,
+            scale: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_broadcast_op(input, scale, output, stringify!($fn_f32))?;
+            unsafe {
+                check($launcher_f32(
+                    input.as_ptr(),
+                    scale.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len() as c_int,
+                    scale.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            input: &TensorHip<f16>,
+            scale: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            stream: &Stream,
+        ) -> Result<()> {
+            validate_broadcast_op(input, scale, output, stringify!($fn_f16))?;
+            unsafe {
+                check($launcher_f16(
+                    input.as_ptr(),
+                    scale.as_ptr(),
+                    output.as_mut_ptr(),
+                    input.len() as c_int,
+                    scale.len() as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
 /// Launch the copy kernel to copy f32 data from input to output
 pub fn copy_f32(
     input: &DeviceBuffer<f32>,
@@ -45,42 +215,9 @@ pub fn copy_f32(
     }
 }
 
-/// GPU-to-GPU copy for TensorHip: output = input
-///
-/// Copies data from one GPU tensor to another without CPU round-trip.
-/// Both tensors must have the same length and be contiguous.
-pub fn copy_tensor_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "copy_tensor_f32")?;
-    unsafe {
-        check(launch_copy_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-/// GPU-to-GPU copy for TensorHip<f16>: output = input
-pub fn copy_tensor_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "copy_tensor_f16")?;
-    unsafe {
-        check(launch_copy_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// GPU-to-GPU copy for TensorHip: output = input
+// Both tensors must have the same length and be contiguous.
+dual_precision_unary!(copy_tensor_f32, copy_tensor_f16, launch_copy_f32, launch_copy_f16);
 
 /// Copy f32 data from host, through GPU copy kernel, back to host.
 /// This is a convenience function for testing.
@@ -101,41 +238,9 @@ pub fn hip_copy_kernel(input: &[f32]) -> Result<Vec<f32>> {
     Ok(output)
 }
 
-/// Launch the decay exponential kernel: out = exp(-exp(x))
-///
-/// This is the time decay transformation used in RWKV7.
-/// Numerically stable for all finite inputs.
-pub fn decay_exp_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "decay_exp_f32")?;
-    unsafe {
-        check(launch_decay_exp_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn decay_exp_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "decay_exp_f16")?;
-    unsafe {
-        check(launch_decay_exp_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Decay exponential: out = exp(-exp(x))
+// Time decay transformation used in RWKV7. Numerically stable for all finite inputs.
+dual_precision_unary!(decay_exp_f32, decay_exp_f16, launch_decay_exp_f32, launch_decay_exp_f16);
 
 /// Compute decay exponential on host data, returning results.
 /// This is a convenience function for testing.
@@ -151,49 +256,9 @@ pub fn hip_decay_exp(input: &[f32]) -> Result<Vec<f32>> {
     d_output.to_vec(&stream)
 }
 
-/// Launch the lerp kernel: out = a + t * (b - a) (linear interpolation)
-///
-/// This is used for mixing operations in RWKV7.
-/// All tensors must have the same length and be contiguous.
-pub fn lerp_f32(
-    a: &TensorHip<f32>,
-    b: &TensorHip<f32>,
-    t: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_ternary_op(a, b, t, output, "lerp_f32")?;
-    unsafe {
-        check(launch_lerp_f32(
-            a.as_ptr(),
-            b.as_ptr(),
-            t.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn lerp_f16(
-    a: &TensorHip<f16>,
-    b: &TensorHip<f16>,
-    t: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_ternary_op(a, b, t, output, "lerp_f16")?;
-    unsafe {
-        check(launch_lerp_f16(
-            a.as_ptr(),
-            b.as_ptr(),
-            t.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Lerp: out = a + t * (b - a) (linear interpolation)
+// Used for mixing operations in RWKV7. All tensors must have the same length and be contiguous.
+dual_precision_ternary!(lerp_f32, lerp_f16, launch_lerp_f32, launch_lerp_f16);
 
 /// Compute linear interpolation on host data, returning results.
 /// This is a convenience function for testing.
@@ -218,40 +283,9 @@ pub fn hip_lerp(a: &[f32], b: &[f32], t: &[f32]) -> Result<Vec<f32>> {
     d_output.to_vec(&stream)
 }
 
-/// Launch the sigmoid kernel: out = 1 / (1 + exp(-x))
-///
-/// Standard sigmoid activation function.
-pub fn sigmoid_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "sigmoid_f32")?;
-    unsafe {
-        check(launch_sigmoid_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn sigmoid_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "sigmoid_f16")?;
-    unsafe {
-        check(launch_sigmoid_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Sigmoid: out = 1 / (1 + exp(-x))
+// Standard sigmoid activation function.
+dual_precision_unary!(sigmoid_f32, sigmoid_f16, launch_sigmoid_f32, launch_sigmoid_f16);
 
 /// Compute sigmoid on host data, returning results.
 /// This is a convenience function for testing.
@@ -267,40 +301,9 @@ pub fn hip_sigmoid(input: &[f32]) -> Result<Vec<f32>> {
     d_output.to_vec(&stream)
 }
 
-/// Launch the squared ReLU kernel: out = max(0, x)^2
-///
-/// Used in RWKV7 channel mixing.
-pub fn squared_relu_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "squared_relu_f32")?;
-    unsafe {
-        check(launch_squared_relu_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn squared_relu_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "squared_relu_f16")?;
-    unsafe {
-        check(launch_squared_relu_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Squared ReLU: out = max(0, x)^2
+// Used in RWKV7 channel mixing.
+dual_precision_unary!(squared_relu_f32, squared_relu_f16, launch_squared_relu_f32, launch_squared_relu_f16);
 
 /// Compute squared ReLU on host data, returning results.
 /// This is a convenience function for testing.
@@ -316,41 +319,9 @@ pub fn hip_squared_relu(input: &[f32]) -> Result<Vec<f32>> {
     d_output.to_vec(&stream)
 }
 
-/// Launch the softplus decay kernel: out = log(sigmoid(x)) - 0.5
-///
-/// Used for RWKV7 time decay computation.
-/// Numerically stable for all finite inputs.
-pub fn softplus_decay_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "softplus_decay_f32")?;
-    unsafe {
-        check(launch_softplus_decay_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn softplus_decay_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "softplus_decay_f16")?;
-    unsafe {
-        check(launch_softplus_decay_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Softplus decay: out = log(sigmoid(x)) - 0.5
+// Used for RWKV7 time decay computation. Numerically stable for all finite inputs.
+dual_precision_unary!(softplus_decay_f32, softplus_decay_f16, launch_softplus_decay_f32, launch_softplus_decay_f16);
 
 /// Compute softplus decay on host data, returning results.
 /// This is a convenience function for testing.
@@ -366,38 +337,8 @@ pub fn hip_softplus_decay(input: &[f32]) -> Result<Vec<f32>> {
     d_output.to_vec(&stream)
 }
 
-/// Launch the tanh kernel: out = tanh(x)
-pub fn tanh_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "tanh_f32")?;
-    unsafe {
-        check(launch_tanh_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn tanh_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "tanh_f16")?;
-    unsafe {
-        check(launch_tanh_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Tanh: out = tanh(x)
+dual_precision_unary!(tanh_f32, tanh_f16, launch_tanh_f32, launch_tanh_f16);
 
 /// Compute tanh on host data.
 pub fn hip_tanh(input: &[f32]) -> Result<Vec<f32>> {
@@ -416,66 +357,19 @@ pub fn hip_tanh(input: &[f32]) -> Result<Vec<f32>> {
 // Elementwise operations for GPU-native forward pass
 // ============================================================================
 
-/// Elementwise add: output = a + b
-///
-/// Both inputs must have the same shape and be contiguous.
-pub fn add_f32(
-    a: &TensorHip<f32>,
-    b: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_binary_op(a, b, output, "add_f32")?;
-    unsafe {
-        check(launch_add_f32(
-            a.as_ptr(),
-            b.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Elementwise add: output = a + b
+// Both inputs must have the same shape and be contiguous.
+dual_precision_binary!(add_f32, add_f16, launch_add_f32, launch_add_f16);
 
-/// Elementwise multiply: output = a * b
-///
-/// Both inputs must have the same shape and be contiguous.
-pub fn mul_f32(
-    a: &TensorHip<f32>,
-    b: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_binary_op(a, b, output, "mul_f32")?;
-    unsafe {
-        check(launch_mul_f32(
-            a.as_ptr(),
-            b.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Elementwise multiply: output = a * b
+// Both inputs must have the same shape and be contiguous.
+dual_precision_binary!(mul_f32, mul_f16, launch_mul_f32, launch_mul_f16);
 
-/// Negate: output = -input
-pub fn negate_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "negate_f32")?;
-    unsafe {
-        check(launch_negate_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Negate: output = -input
+dual_precision_unary!(negate_f32, negate_f16, launch_negate_f32, launch_negate_f16);
 
 /// Exponential: output = exp(input)
+/// Note: Only f32 variant exists (no f16 FFI binding).
 pub fn exp_f32(input: &TensorHip<f32>, output: &mut TensorHip<f32>, stream: &Stream) -> Result<()> {
     validate_unary_op(input, output, "exp_f32")?;
     unsafe {
@@ -488,141 +382,13 @@ pub fn exp_f32(input: &TensorHip<f32>, output: &mut TensorHip<f32>, stream: &Str
     }
 }
 
-/// Broadcast add: output[i] = input[i] + bias[i % bias_len]
-///
-/// Used for adding per-channel biases to batched data.
-/// Input shape: [C, T, B], bias shape: [C], output shape: [C, T, B]
-pub fn broadcast_add_f32(
-    input: &TensorHip<f32>,
-    bias: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_broadcast_op(input, bias, output, "broadcast_add_f32")?;
-    unsafe {
-        check(launch_broadcast_add_f32(
-            input.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            bias.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Broadcast add: output[i] = input[i] + bias[i % bias_len]
+// Used for adding per-channel biases to batched data.
+dual_precision_broadcast!(broadcast_add_f32, broadcast_add_f16, launch_broadcast_add_f32, launch_broadcast_add_f16);
 
-/// Broadcast multiply: output[i] = input[i] * scale[i % scale_len]
-///
-/// Used for per-channel scaling (e.g., k * k_k in RWKV7).
-/// Input shape: [C, T, B], scale shape: [C], output shape: [C, T, B]
-pub fn broadcast_mul_f32(
-    input: &TensorHip<f32>,
-    scale: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_broadcast_op(input, scale, output, "broadcast_mul_f32")?;
-    unsafe {
-        check(launch_broadcast_mul_f32(
-            input.as_ptr(),
-            scale.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            scale.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn add_f16(
-    a: &TensorHip<f16>,
-    b: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_binary_op(a, b, output, "add_f16")?;
-    unsafe {
-        check(launch_add_f16(
-            a.as_ptr(),
-            b.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn mul_f16(
-    a: &TensorHip<f16>,
-    b: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_binary_op(a, b, output, "mul_f16")?;
-    unsafe {
-        check(launch_mul_f16(
-            a.as_ptr(),
-            b.as_ptr(),
-            output.as_mut_ptr(),
-            a.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn negate_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_unary_op(input, output, "negate_f16")?;
-    unsafe {
-        check(launch_negate_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn broadcast_add_f16(
-    input: &TensorHip<f16>,
-    bias: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_broadcast_op(input, bias, output, "broadcast_add_f16")?;
-    unsafe {
-        check(launch_broadcast_add_f16(
-            input.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            bias.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn broadcast_mul_f16(
-    input: &TensorHip<f16>,
-    scale: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    validate_broadcast_op(input, scale, output, "broadcast_mul_f16")?;
-    unsafe {
-        check(launch_broadcast_mul_f16(
-            input.as_ptr(),
-            scale.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            scale.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// Broadcast multiply: output[i] = input[i] * scale[i % scale_len]
+// Used for per-channel scaling (e.g., k * k_k in RWKV7).
+dual_precision_broadcast!(broadcast_mul_f32, broadcast_mul_f16, launch_broadcast_mul_f32, launch_broadcast_mul_f16);
 
 #[cfg(test)]
 mod tests {

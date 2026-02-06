@@ -8,113 +8,111 @@ use crate::hip::device::Stream;
 use crate::hip::ffi::{check, launch_wkv_bonus_f16, launch_wkv_bonus_f32, HipErrorKind, Result};
 use crate::hip::tensor::{TensorHip, TensorShape};
 
-/// Launch the WKV bonus kernel (time_first).
-///
-/// Computes: output = (r * k * r_k).sum(dim=head_size) * v
-/// This is the "time_first" bonus attention on the current token.
-///
-/// # Arguments
-/// * `r` - Receptance tensor of shape [N, H, T, B] where N=head_size, H=n_heads
-/// * `k` - Key tensor of shape [N, H, T, B]
-/// * `v` - Value tensor of shape [N, H, T, B]
-/// * `r_k` - Per-head bonus weight of shape [N, H, 1, 1]
-/// * `output` - Output tensor of shape [N, H, T, B]
-/// * `stream` - HIP stream
-pub fn wkv_bonus_f32(
-    r: &TensorHip<f32>,
-    k: &TensorHip<f32>,
-    v: &TensorHip<f32>,
-    r_k: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    stream: &Stream,
-) -> Result<()> {
-    // Shape: [N, H, T, B] where N=head_size
-    let n = r.shape()[0]; // head_size
-    let h = r.shape()[1]; // n_heads
-    let t = r.shape()[2]; // tokens
-    let b = r.shape()[3]; // batch
+// ============================================================================
+// Dual-precision macro generators for WKV operations
+// ============================================================================
 
-    // Validate shapes
-    if k.shape() != r.shape() || v.shape() != r.shape() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Shape mismatch: r={}, k={}, v={}",
-                r.shape(),
-                k.shape(),
-                v.shape()
-            ),
-        });
-    }
-    if output.shape() != r.shape() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Output shape mismatch: expected {}, got {}",
-                r.shape(),
-                output.shape()
-            ),
-        });
-    }
-    if r_k.shape()[0] != n || r_k.shape()[1] != h {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "r_k shape mismatch: expected [{}, {}, 1, 1], got {}",
-                n,
-                h,
-                r_k.shape()
-            ),
-        });
-    }
-    require_contiguous_5(r, k, v, r_k, output, "wkv_bonus_f32")?;
+/// Generate f32 and f16 variants of wkv_bonus.
+macro_rules! dual_precision_wkv_bonus {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            r: &TensorHip<f32>,
+            k: &TensorHip<f32>,
+            v: &TensorHip<f32>,
+            r_k: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            stream: &Stream,
+        ) -> Result<()> {
+            let n = r.shape()[0]; // head_size
+            let h = r.shape()[1]; // n_heads
+            let t = r.shape()[2]; // tokens
+            let b = r.shape()[3]; // batch
 
-    unsafe {
-        check(launch_wkv_bonus_f32(
-            r.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            r_k.as_ptr(),
-            output.as_mut_ptr(),
-            n as c_int,
-            h as c_int,
-            t as c_int,
-            b as c_int,
-            stream.handle(),
-        ))
-    }
+            // Validate shapes
+            if k.shape() != r.shape() || v.shape() != r.shape() {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Shape mismatch: r={}, k={}, v={}",
+                        r.shape(),
+                        k.shape(),
+                        v.shape()
+                    ),
+                });
+            }
+            if output.shape() != r.shape() {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Output shape mismatch: expected {}, got {}",
+                        r.shape(),
+                        output.shape()
+                    ),
+                });
+            }
+            if r_k.shape()[0] != n || r_k.shape()[1] != h {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "r_k shape mismatch: expected [{}, {}, 1, 1], got {}",
+                        n, h, r_k.shape()
+                    ),
+                });
+            }
+            require_contiguous_5(r, k, v, r_k, output, stringify!($fn_f32))?;
+
+            unsafe {
+                check($launcher_f32(
+                    r.as_ptr(),
+                    k.as_ptr(),
+                    v.as_ptr(),
+                    r_k.as_ptr(),
+                    output.as_mut_ptr(),
+                    n as c_int,
+                    h as c_int,
+                    t as c_int,
+                    b as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            r: &TensorHip<f16>,
+            k: &TensorHip<f16>,
+            v: &TensorHip<f16>,
+            r_k: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            stream: &Stream,
+        ) -> Result<()> {
+            let n = r.shape()[0];
+            let h = r.shape()[1];
+            let t = r.shape()[2];
+            let b = r.shape()[3];
+
+            require_contiguous_5(r, k, v, r_k, output, stringify!($fn_f16))?;
+
+            unsafe {
+                check($launcher_f16(
+                    r.as_ptr(),
+                    k.as_ptr(),
+                    v.as_ptr(),
+                    r_k.as_ptr(),
+                    output.as_mut_ptr(),
+                    n as c_int,
+                    h as c_int,
+                    t as c_int,
+                    b as c_int,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
 }
 
-pub fn wkv_bonus_f16(
-    r: &TensorHip<f16>,
-    k: &TensorHip<f16>,
-    v: &TensorHip<f16>,
-    r_k: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    stream: &Stream,
-) -> Result<()> {
-    let n = r.shape()[0];
-    let h = r.shape()[1];
-    let t = r.shape()[2];
-    let b = r.shape()[3];
-
-    require_contiguous_5(r, k, v, r_k, output, "wkv_bonus_f16")?;
-
-    unsafe {
-        check(launch_wkv_bonus_f16(
-            r.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            r_k.as_ptr(),
-            output.as_mut_ptr(),
-            n as c_int,
-            h as c_int,
-            t as c_int,
-            b as c_int,
-            stream.handle(),
-        ))
-    }
-}
+// WKV bonus kernel (time_first): output = (r * k * r_k).sum(dim=head_size) * v
+// This is the "time_first" bonus attention on the current token.
+dual_precision_wkv_bonus!(wkv_bonus_f32, wkv_bonus_f16, launch_wkv_bonus_f32, launch_wkv_bonus_f16);
 
 /// Compute WKV bonus on host data, returning results.
 /// This is a convenience function for testing.

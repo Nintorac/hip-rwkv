@@ -11,6 +11,204 @@ use crate::hip::ffi::{
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
+// ============================================================================
+// Dual-precision macro generators for normalization operations
+// ============================================================================
+
+/// Generate f32 and f16 variants of group normalization.
+macro_rules! dual_precision_group_norm {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            input: &TensorHip<f32>,
+            weight: &TensorHip<f32>,
+            bias: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            num_groups: usize,
+            eps: f32,
+            stream: &Stream,
+        ) -> Result<()> {
+            let c = input.shape()[0];
+            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+
+            if !c.is_multiple_of(num_groups) {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Channel count {} must be divisible by num_groups {}",
+                        c, num_groups
+                    ),
+                });
+            }
+            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            if output.shape()[0] != c || out_n != n {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
+                        c, n, output.shape(), out_n
+                    ),
+                });
+            }
+            require_contiguous_pair(input, output, stringify!($fn_f32))?;
+
+            unsafe {
+                check($launcher_f32(
+                    input.as_ptr(),
+                    weight.as_ptr(),
+                    bias.as_ptr(),
+                    output.as_mut_ptr(),
+                    c as c_int,
+                    n as c_int,
+                    num_groups as c_int,
+                    eps,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            input: &TensorHip<f16>,
+            weight: &TensorHip<f16>,
+            bias: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            num_groups: usize,
+            eps: f32,
+            stream: &Stream,
+        ) -> Result<()> {
+            let c = input.shape()[0];
+            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+
+            if !c.is_multiple_of(num_groups) {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Channel count {} must be divisible by num_groups {}",
+                        c, num_groups
+                    ),
+                });
+            }
+            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            if output.shape()[0] != c || out_n != n {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
+                        c, n, output.shape(), out_n
+                    ),
+                });
+            }
+            require_contiguous_pair(input, output, stringify!($fn_f16))?;
+
+            unsafe {
+                check($launcher_f16(
+                    input.as_ptr(),
+                    weight.as_ptr(),
+                    bias.as_ptr(),
+                    output.as_mut_ptr(),
+                    c as c_int,
+                    n as c_int,
+                    num_groups as c_int,
+                    eps,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
+/// Generate f32 and f16 variants of L2 normalization.
+macro_rules! dual_precision_l2_norm {
+    ($fn_f32:ident, $fn_f16:ident, $launcher_f32:ident, $launcher_f16:ident) => {
+        pub fn $fn_f32(
+            input: &TensorHip<f32>,
+            output: &mut TensorHip<f32>,
+            head_size: usize,
+            eps: f32,
+            stream: &Stream,
+        ) -> Result<()> {
+            let c = input.shape()[0];
+            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+
+            if !c.is_multiple_of(head_size) {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Channel count {} must be divisible by head_size {}",
+                        c, head_size
+                    ),
+                });
+            }
+            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            if output.shape()[0] != c || out_n != n {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
+                        c, n, output.shape(), out_n
+                    ),
+                });
+            }
+            require_contiguous_pair(input, output, stringify!($fn_f32))?;
+
+            unsafe {
+                check($launcher_f32(
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    c as c_int,
+                    n as c_int,
+                    head_size as c_int,
+                    eps,
+                    stream.handle(),
+                ))
+            }
+        }
+
+        pub fn $fn_f16(
+            input: &TensorHip<f16>,
+            output: &mut TensorHip<f16>,
+            head_size: usize,
+            eps: f32,
+            stream: &Stream,
+        ) -> Result<()> {
+            let c = input.shape()[0];
+            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+
+            if !c.is_multiple_of(head_size) {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Channel count {} must be divisible by head_size {}",
+                        c, head_size
+                    ),
+                });
+            }
+            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            if output.shape()[0] != c || out_n != n {
+                return Err(HipErrorKind {
+                    code: -1,
+                    message: format!(
+                        "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
+                        c, n, output.shape(), out_n
+                    ),
+                });
+            }
+            require_contiguous_pair(input, output, stringify!($fn_f16))?;
+
+            unsafe {
+                check($launcher_f16(
+                    input.as_ptr(),
+                    output.as_mut_ptr(),
+                    c as c_int,
+                    n as c_int,
+                    head_size as c_int,
+                    eps,
+                    stream.handle(),
+                ))
+            }
+        }
+    };
+}
+
 /// Launch the layer normalization kernel.
 ///
 /// Layer normalization normalizes each vector of length C (channel dimension)
@@ -170,122 +368,9 @@ pub fn hip_layer_norm(
     d_output.to_vec(&stream)
 }
 
-/// Launch the group normalization kernel.
-///
-/// Group normalization divides channels into groups and normalizes within each group.
-/// Used in RWKV7 with 12 groups (H = 12 heads) and eps = 64e-5.
-///
-/// # Arguments
-/// * `input` - Input tensor of shape [C, N, 1, 1]
-/// * `weight` - Per-channel weight of shape [C, 1, 1, 1]
-/// * `bias` - Per-channel bias of shape [C, 1, 1, 1]
-/// * `output` - Output tensor of shape [C, N, 1, 1]
-/// * `num_groups` - Number of groups (must divide C evenly)
-/// * `eps` - Epsilon for numerical stability
-/// * `stream` - HIP stream
-pub fn group_norm_f32(
-    input: &TensorHip<f32>,
-    weight: &TensorHip<f32>,
-    bias: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    num_groups: usize,
-    eps: f32,
-    stream: &Stream,
-) -> Result<()> {
-    let c = input.shape()[0];
-    // Compute n as product of all dimensions except the first (handles batching)
-    let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
-
-    if !c.is_multiple_of(num_groups) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Channel count {} must be divisible by num_groups {}",
-                c, num_groups
-            ),
-        });
-    }
-    // Validate shapes - output should have same total size
-    let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
-    if output.shape()[0] != c || out_n != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
-                c,
-                n,
-                output.shape(),
-                out_n
-            ),
-        });
-    }
-    require_contiguous_pair(input, output, "group_norm_f32")?;
-
-    unsafe {
-        check(launch_group_norm_f32(
-            input.as_ptr(),
-            weight.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            num_groups as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn group_norm_f16(
-    input: &TensorHip<f16>,
-    weight: &TensorHip<f16>,
-    bias: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    num_groups: usize,
-    eps: f32,
-    stream: &Stream,
-) -> Result<()> {
-    let c = input.shape()[0];
-    let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
-
-    if !c.is_multiple_of(num_groups) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Channel count {} must be divisible by num_groups {}",
-                c, num_groups
-            ),
-        });
-    }
-    let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
-    if output.shape()[0] != c || out_n != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
-                c,
-                n,
-                output.shape(),
-                out_n
-            ),
-        });
-    }
-    require_contiguous_pair(input, output, "group_norm_f16")?;
-
-    unsafe {
-        check(launch_group_norm_f16(
-            input.as_ptr(),
-            weight.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            num_groups as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
-}
+// Group normalization: divides channels into groups and normalizes within each group.
+// Used in RWKV7 with 12 groups (H = 12 heads) and eps = 64e-5.
+dual_precision_group_norm!(group_norm_f32, group_norm_f16, launch_group_norm_f32, launch_group_norm_f16);
 
 /// Compute group normalization on host data.
 pub fn hip_group_norm(
@@ -336,112 +421,9 @@ pub fn hip_group_norm(
     d_output.to_vec(&stream)
 }
 
-/// Launch the L2 normalization kernel.
-///
-/// L2 normalization normalizes each head to unit L2 norm.
-/// Used for key normalization in RWKV7.
-///
-/// # Arguments
-/// * `input` - Input tensor of shape [C, N, 1, 1] where C = H * head_size
-/// * `output` - Output tensor of shape [C, N, 1, 1]
-/// * `head_size` - Size of each head (normalize over this dimension)
-/// * `eps` - Epsilon for numerical stability
-/// * `stream` - HIP stream
-pub fn l2_norm_f32(
-    input: &TensorHip<f32>,
-    output: &mut TensorHip<f32>,
-    head_size: usize,
-    eps: f32,
-    stream: &Stream,
-) -> Result<()> {
-    let c = input.shape()[0];
-    // Compute n as product of all dimensions except the first (handles batching)
-    let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
-
-    if !c.is_multiple_of(head_size) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Channel count {} must be divisible by head_size {}",
-                c, head_size
-            ),
-        });
-    }
-    // Validate shapes - output should have same total size
-    let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
-    if output.shape()[0] != c || out_n != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
-                c,
-                n,
-                output.shape(),
-                out_n
-            ),
-        });
-    }
-    require_contiguous_pair(input, output, "l2_norm_f32")?;
-
-    unsafe {
-        check(launch_l2_norm_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            head_size as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn l2_norm_f16(
-    input: &TensorHip<f16>,
-    output: &mut TensorHip<f16>,
-    head_size: usize,
-    eps: f32,
-    stream: &Stream,
-) -> Result<()> {
-    let c = input.shape()[0];
-    let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
-
-    if !c.is_multiple_of(head_size) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Channel count {} must be divisible by head_size {}",
-                c, head_size
-            ),
-        });
-    }
-    let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
-    if output.shape()[0] != c || out_n != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Output shape mismatch: expected C={} with {} vectors, got {} with {} vectors",
-                c,
-                n,
-                output.shape(),
-                out_n
-            ),
-        });
-    }
-    require_contiguous_pair(input, output, "l2_norm_f16")?;
-
-    unsafe {
-        check(launch_l2_norm_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            head_size as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
-}
+// L2 normalization: normalizes each head to unit L2 norm.
+// Used for key normalization in RWKV7.
+dual_precision_l2_norm!(l2_norm_f32, l2_norm_f16, launch_l2_norm_f32, launch_l2_norm_f16);
 
 /// Compute L2 normalization on host data.
 pub fn hip_l2_norm(
