@@ -117,31 +117,35 @@ When working on tickets, follow this process:
 3. **Claim the ticket**: Run `br update <id> --claim` to mark it in progress
 4. **Implement the changes**: Write code, tests, and documentation as needed
 5. **Comment on divergences**: If the implementation diverges from the plan or ticket description (e.g., different approach needed, unexpected dependency, extra work required), add a comment explaining why: `br comments add <id> "Diverged from plan: <reason>"`
-6. **Verify acceptance criteria**: Ensure ALL acceptance criteria in the ticket are met
-7. **Commit the changes**: Create a git commit with the ticket ID in the message (e.g., `(bd-2sh.2.1)`)
-8. **Commit ticket updates**: After any `br` commands that modify ticket state (close, comment, update), commit `.beads/issues.jsonl` to keep the tracker in sync:
-   ```bash
-   git add .beads/issues.jsonl && git commit -m "Update beads"
-   ```
-9. **Close with a summary comment**: Add a comment summarizing what was done, then close:
+6. **Verify acceptance criteria**: Ensure ALL acceptance criteria in the ticket are met, run tests
+7. **Close with a summary comment**: Add a comment summarizing what was done, then close:
    ```bash
    br comments add <id> "Summary of changes and any notes for downstream tickets"
    br close <id> --suggest-next
    ```
+8. **DO NOT COMMIT** - The orchestrator will validate the implementation, review divergence comments, and commit both code and `.beads/issues.jsonl` together after confirmation.
 
-**CRITICAL - Before Closing a Ticket:**
-- [ ] All code changes are **committed** (check `git status` - no uncommitted work)
+**Before Closing a Ticket (agent checklist):**
 - [ ] All acceptance criteria are **verified and met**
 - [ ] Tests pass at the tolerances specified in the ticket/plan
 - [ ] Implementation follows architectural decisions from referenced plan documents
 - [ ] A closing comment has been added summarizing the work and any divergences
+- [ ] Any divergences from the plan are documented in a comment
 
 **Do NOT close a ticket if:**
-- There is uncommitted work in the working directory
 - Acceptance criteria checkboxes are not satisfied
 - Tests pass only with loosened tolerances (document the gap instead)
 
-Example workflow:
+**Orchestrator responsibilities (after agent closes ticket):**
+1. Review the closing comment and any divergence notes
+2. Validate the implementation (run tests, check code)
+3. If approved, commit code and beads together:
+   ```bash
+   git add . && git commit -m "Description (bd-xxx)"
+   ```
+4. If divergence is unacceptable, reopen ticket and request changes
+
+Example agent workflow:
 ```bash
 br ready                           # Find next ticket
 br show bd-2sh.2.1                 # Review requirements
@@ -151,11 +155,12 @@ br comments list bd-2sh.1.3        # Check notes from predecessor ticket
 br update bd-2sh.2.1 --claim       # Claim it
 # ... implement changes ...
 # If diverging from plan:
-br comments add bd-2sh.2.1 "Had to also update X because Y"
-git status                         # Verify no uncommitted changes remain
-git add . && git commit -m "Add feature X (bd-2sh.2.1)"
+br comments add bd-2sh.2.1 "Diverged from plan: had to also update X because Y"
+# Run tests to verify
+cargo test --lib
 br comments add bd-2sh.2.1 "Done: implemented X with tests. Note: Z for downstream."
 br close bd-2sh.2.1 --suggest-next
+# DO NOT COMMIT - orchestrator handles commits
 ```
 
 ### JSON Output
