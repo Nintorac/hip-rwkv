@@ -3,7 +3,7 @@
 //! This module provides:
 //! - Chunk index precomputation ([`prepare_chunk_indices`], [`prepare_chunk_offsets`])
 //!   for mapping flat chunk IDs to `(sequence_id, local_chunk_id)` pairs.
-//! - The [`FlaChunkedWkv`] struct, which holds pre-sized scratch buffer views
+//! - The [`ChunkWkv`] struct, which holds pre-sized scratch buffer views
 //!   and exposes a `compute()` method for the 5-stage FLA pipeline.
 //!
 //! The 5-stage FLA pipeline:
@@ -34,7 +34,7 @@ use crate::hip::tensor::{TensorHip, TensorShape};
 /// FLA handles all prefill (T>1), so the threshold is set to 2.
 pub const FLA_CHUNK_THRESHOLD: usize = 2;
 
-/// FLA chunked WKV7 kernel for efficient prefill.
+/// Chunked WKV7 kernel for efficient prefill (FLA algorithm).
 ///
 /// Holds pre-sized views of the FLA scratch buffers from [`PrefillScratch`] plus
 /// configuration parameters for the current forward pass. Constructed at the
@@ -44,12 +44,12 @@ pub const FLA_CHUNK_THRESHOLD: usize = 2;
 /// all intermediate buffers come from the pre-allocated scratch pool.
 ///
 /// Unlike the recurrent WKV kernels (which implement the [`super::prefill::WkvKernel`]
-/// trait), FLA uses a direct `compute()` method that takes `&mut self` and the
+/// trait), ChunkWkv uses a direct `compute()` method that takes `&mut self` and the
 /// raw `att_w` tensor (pre-exponentiation). This avoids:
 /// - The precision-losing round-trip through f16 `exp(-exp(w))` then `log`
 /// - The `ptr::read` hack needed to get `&mut` access from `&self`
 #[allow(non_snake_case)]
-pub struct FlaChunkedWkv {
+pub struct ChunkWkv {
     /// FLA chunk size (C, typically 16)
     pub chunk_size: usize,
     /// Number of sequences in the batch
@@ -94,8 +94,8 @@ pub struct FlaChunkedWkv {
     pub fla_v_new: TensorHip<f32>,
 }
 
-impl FlaChunkedWkv {
-    /// Create an `FlaChunkedWkv` instance with pre-sized views of the FLA
+impl ChunkWkv {
+    /// Create a `ChunkWkv` instance with pre-sized views of the FLA
     /// scratch buffers for the given forward-pass dimensions.
     ///
     /// This does not allocate GPU memory -- it creates lightweight non-owning

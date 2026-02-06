@@ -6,7 +6,7 @@
 //! scratch structs, so it works with any scratch type (PrefillScratch, DecodeScratch).
 //!
 //! The WKV kernel call is parameterized via a closure in `attention_block`,
-//! allowing callers to provide either FLA (prefill) or FusedT1Wkv (decode).
+//! allowing callers to provide either FLA (prefill) or RecurrentWkv (decode).
 //!
 //! When the `hip-probes` feature is enabled, the helpers accept an optional
 //! `ProbeState` to fire probe hooks at the same points the old monolithic
@@ -116,14 +116,14 @@ fn stack_tensors(
 /// Inputs for the WKV kernel call within `attention_block`.
 ///
 /// These are the reshaped tensors (wkv_data_shape) that both FLA and
-/// FusedT1Wkv need. The `att_w_wkv` field contains raw att_w for FLA
+/// RecurrentWkv need. The `att_w_wkv` field contains raw att_w for FLA
 /// or is unused for decode (which uses `w_decay_wkv` instead).
 pub struct WkvCallInputs<'a> {
     /// Raw attention decay (pre-exponentiation), reshaped to wkv_data_shape.
     /// Used by FLA for better precision; decode uses w_decay_wkv instead.
     pub att_w_wkv: &'a TensorHip<f16>,
     /// Exponentiated decay: exp(-exp(att_w)), reshaped to wkv_data_shape.
-    /// Used by FusedT1Wkv (decode); FLA ignores this.
+    /// Used by RecurrentWkv (decode); FLA ignores this.
     pub w_decay_wkv: &'a TensorHip<f16>,
     /// Receptance, reshaped to wkv_data_shape.
     pub r_wkv: &'a TensorHip<f16>,

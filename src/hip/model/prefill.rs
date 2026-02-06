@@ -5,7 +5,7 @@
 //! module) without changing the inference loop in `step_inner()`.
 //!
 //! Two built-in implementations are provided:
-//! - [`FusedT1Wkv`] -- optimized for T=1 decode (in-place state update)
+//! - [`RecurrentWkv`] -- optimized for T=1 decode (in-place state update)
 //! - [`WaveReduceWkv`] -- wave-cooperative reduction for T>1 prefill
 
 use half::f16;
@@ -114,12 +114,12 @@ impl WkvKernel for WaveReduceWkv {
     }
 }
 
-/// Fused WKV7 kernel optimized for T=1 decode.
+/// Recurrent WKV7 kernel optimized for T=1 decode.
 ///
 /// Updates state in-place (single mutable tensor, no separate in/out).
-pub struct FusedT1Wkv;
+pub struct RecurrentWkv;
 
-impl WkvKernel for FusedT1Wkv {
+impl WkvKernel for RecurrentWkv {
     fn compute(
         &self,
         input: &WkvInput<'_>,

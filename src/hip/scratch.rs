@@ -647,7 +647,7 @@ impl PrefillConfig {
 ///
 /// Controls buffer sizing and batching for T=1 decode inference.
 /// Unlike `HipRuntimeConfig`, this has no FLA chunk size since decode
-/// uses only the FusedT1Wkv kernel.
+/// uses only the RecurrentWkv kernel.
 #[derive(Debug, Clone)]
 pub struct DecodeConfig {
     /// Batch size (number of sequences decoded in parallel).
@@ -671,7 +671,7 @@ impl DecodeConfig {
 /// Pre-allocated scratch buffers for T=1 decode inference.
 ///
 /// Contains only the buffers needed for single-token decode using the
-/// FusedT1Wkv kernel. No FLA-specific buffers are allocated, saving
+/// RecurrentWkv kernel. No FLA-specific buffers are allocated, saving
 /// significant GPU memory compared to `PrefillScratch`.
 ///
 /// # Buffer Categories

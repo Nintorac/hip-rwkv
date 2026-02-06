@@ -1,7 +1,7 @@
 //! Standalone HIP decode module for T=1 token generation.
 //!
 //! This module provides [`HipDecode`], a standalone inference module that uses
-//! the FusedT1Wkv kernel for single-token decode. It holds shared model weights
+//! the RecurrentWkv kernel for single-token decode. It holds shared model weights
 //! via `Arc<Rwkv7Model>` and its own [`DecodeScratch`] buffers sized for T=1.
 //!
 //! # Architecture
@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use super::dispatch_helpers::{self, ProbeState};
-use super::prefill::{FusedT1Wkv, WkvInput, WkvKernel};
+use super::prefill::{RecurrentWkv, WkvInput, WkvKernel};
 use super::state::{HipState, StateLayout};
 use super::{Rwkv7Model, Rwkv7ModelInfo};
 use crate::hip::ffi::{check, hip_memcpy_h2d, HipErrorKind, Result};
@@ -45,7 +45,7 @@ use crate::hip::probe::{self, HipProbeMapRef};
 /// Standalone decode module for T=1 token generation.
 ///
 /// Holds shared model weights via `Arc<Rwkv7Model>` and owns its own
-/// `DecodeScratch` with T=1 buffers. Uses only the FusedT1Wkv kernel
+/// `DecodeScratch` with T=1 buffers. Uses only the RecurrentWkv kernel
 /// (no FLA, no WaveReduce).
 ///
 /// This module is independent of `Rwkv7Hip` and `HipPrefill` -- it can be
@@ -241,7 +241,7 @@ impl HipDecode {
     ///
     /// Copies all per-layer state tensors (att_shift, ffn_shift, wkv_state)
     /// from GPU to pinned host memory. The returned state is tagged with
-    /// [`StateLayout::Decode`] since the FusedT1Wkv kernel stores WKV state
+    /// [`StateLayout::Decode`] since the RecurrentWkv kernel stores WKV state
     /// in V-row, K-col layout.
     ///
     /// # Errors
@@ -293,7 +293,7 @@ impl HipDecode {
         })
     }
 
-    /// Run a single decode step (T=1 per sequence) using FusedT1Wkv.
+    /// Run a single decode step (T=1 per sequence) using RecurrentWkv.
     ///
     /// Each inner slice must contain exactly one token. Returns logits as
     /// a flat `Vec<f32>` of length `batch_size * n_vocab`.
@@ -351,7 +351,7 @@ impl HipDecode {
 
     /// Core GPU forward pass for T=1 decode.
     ///
-    /// Uses the shared dispatch helpers with FusedT1Wkv closures for the WKV
+    /// Uses the shared dispatch helpers with RecurrentWkv closures for the WKV
     /// kernel call. State is GPU-resident in scratch buffers and updated in-place.
     fn dispatch_decode(&mut self, tokens: &[&[u32]], lens: &[usize]) -> Result<()> {
         let b = tokens.len();
@@ -493,8 +493,8 @@ impl HipDecode {
             let mut temp1 = scratch.temp1.resized_view_mut(std_shape)?;
             let mut temp2 = scratch.temp2.resized_view_mut(std_shape)?;
 
-            // FusedT1Wkv kernel for decode
-            let wkv_kernel: &dyn WkvKernel = &FusedT1Wkv;
+            // RecurrentWkv kernel for decode
+            let wkv_kernel: &dyn WkvKernel = &RecurrentWkv;
 
             // Process each layer
             for layer_idx in 0..n_layer {
@@ -508,7 +508,7 @@ impl HipDecode {
                     }
                 }
 
-                // Attention block with FusedT1Wkv closure
+                // Attention block with RecurrentWkv closure
                 dispatch_helpers::attention_block(
                     layer_idx,
                     layer,
@@ -556,7 +556,7 @@ impl HipDecode {
                     wkv_data_shape,
                     ctx,
                     stream,
-                    // FusedT1Wkv closure: uses w_decay (exponentiated) for decode
+                    // RecurrentWkv closure: uses w_decay (exponentiated) for decode
                     |inputs, wkv_state, wkv_out_wkv| {
                         let wkv_input = WkvInput {
                             w_decay: inputs.w_decay_wkv,

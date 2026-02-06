@@ -11,7 +11,7 @@ use crate::hip::tensor::TensorHip;
 /// Layout tag for WKV state matrices.
 ///
 /// FLA (prefill) stores WKV state as `state[k * K + v]` (K-rows, V-cols).
-/// FusedT1Wkv (decode) reads `state[v * K + k]` (V-rows, K-cols).
+/// RecurrentWkv (decode) reads `state[v * K + k]` (V-rows, K-cols).
 ///
 /// When transferring state between prefill and decode modules, the WKV state
 /// must be transposed if the layouts differ. The `layout` field on [`HipState`]
@@ -22,7 +22,7 @@ pub enum StateLayout {
     /// Used by the chunked FLA prefill kernel.
     Fla,
     /// Decode layout: `state[v * K + k]` — V-rows, K-cols.
-    /// Used by the FusedT1Wkv single-token decode kernel.
+    /// Used by the RecurrentWkv single-token decode kernel.
     Decode,
 }
 

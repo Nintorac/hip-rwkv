@@ -1,6 +1,6 @@
 //! Standalone prefill module for RWKV7 HIP backend.
 //!
-//! `HipPrefill` runs FLA chunked prefill only (no decode/FusedT1Wkv).
+//! `HipPrefill` runs FLA chunked prefill only (no decode/RecurrentWkv).
 //! It holds an `Arc<Rwkv7Model>` for shared weight access and owns its
 //! own `PrefillScratch` buffers. State is GPU-resident between calls.
 //!
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use half::f16;
 
 use super::dispatch_helpers::{self, ProbeState};
-use super::fla::FlaChunkedWkv;
+use super::fla::ChunkWkv;
 use super::state::{HipState, StateLayout};
 use super::{Rwkv7Model, Rwkv7ModelInfo};
 use crate::hip::ffi::{check, hip_memcpy_h2d, HipErrorKind, Result};
@@ -475,7 +475,7 @@ impl HipPrefill {
     /// Run FLA-only prefill on a batch of token sequences.
     ///
     /// Processes the input tokens through the full model using the FLA chunked
-    /// attention kernel (no FusedT1Wkv decode path). State is updated in-place
+    /// attention kernel (no RecurrentWkv decode path). State is updated in-place
     /// on the GPU.
     ///
     /// # Arguments
@@ -586,7 +586,7 @@ impl HipPrefill {
 
         // Always create FLA kernel (this is prefill-only, always FLA).
         // Packed layout: seq_len = t_total, batch_size = 1 (buffer dim), n_seq = b (real sequences)
-        let mut fla_kernel = FlaChunkedWkv::new(scratch, head_size, n_head, t, 1, b)?;
+        let mut fla_kernel = ChunkWkv::new(scratch, head_size, n_head, t, 1, b)?;
 
         let ctx = &scratch.blas_ctx;
         let stream = ctx.stream();

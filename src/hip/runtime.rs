@@ -77,7 +77,7 @@ pub fn softmax_hip_batch(
 struct HipRuntimeInner {
     /// FLA chunked prefill module (T>1).
     prefill: HipPrefill,
-    /// FusedT1Wkv decode module (T=1).
+    /// RecurrentWkv decode module (T=1).
     decode: HipDecode,
     /// Whether the next decode call needs a state transfer from prefill.
     needs_state_transfer: bool,
@@ -86,7 +86,7 @@ struct HipRuntimeInner {
 /// HIP-based runtime for RWKV7 inference.
 ///
 /// Coordinates `HipPrefill` (FLA chunked prefill for T>1) and `HipDecode`
-/// (FusedT1Wkv for T=1) to provide a unified inference API. State is
+/// (RecurrentWkv for T=1) to provide a unified inference API. State is
 /// automatically transferred from prefill to decode on the first decode
 /// call after a prefill pass.
 ///
@@ -96,7 +96,7 @@ struct HipRuntimeInner {
 /// HipRuntime
 ///   ├── Arc<Rwkv7Model>    (shared weights, for info access)
 ///   ├── HipPrefill         (FLA chunked prefill, T>1)
-///   ├── HipDecode          (FusedT1Wkv decode, T=1)
+///   ├── HipDecode          (RecurrentWkv decode, T=1)
 ///   └── needs_state_transfer: bool
 /// ```
 ///
@@ -425,7 +425,7 @@ impl HipRuntime {
     /// Returns `(flat_logits, new_state)` where logits is `Vec<f32>`.
     ///
     /// 2-tier dispatch (matching the old monolithic `step()`):
-    /// - T=1 -> HipDecode (FusedT1Wkv) for numerical consistency
+    /// - T=1 -> HipDecode (RecurrentWkv) for numerical consistency
     /// - T>1 -> HipPrefill (FLA chunked)
     ///
     /// State layout conversion is handled automatically:
@@ -444,7 +444,7 @@ impl HipRuntime {
         let all_t1 = max_len == 1 && x.iter().all(|s| s.len() == 1);
 
         if all_t1 {
-            // T=1: load state into decode, run FusedT1Wkv, download state
+            // T=1: load state into decode, run RecurrentWkv, download state
             match state {
                 Some(ref s) => {
                     inner.decode.load_state(s)?;

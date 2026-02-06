@@ -10,9 +10,9 @@ pub mod weights;
 
 // Re-export all public types from submodules
 pub use decode::HipDecode;
-pub use fla::FlaChunkedWkv;
+pub use fla::ChunkWkv;
 pub use hip_prefill::HipPrefill;
-pub use prefill::{FusedT1Wkv, WaveReduceWkv, WkvInput, WkvKernel};
+pub use prefill::{RecurrentWkv, WaveReduceWkv, WkvInput, WkvKernel};
 pub use state::{HipState, StateLayout};
 pub use weights::{
     AttentionHip, EmbedHip, FfnHip, HeadHip, LayerHip, LayerNormHip,
