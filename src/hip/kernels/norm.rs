@@ -216,7 +216,7 @@ pub fn group_norm_f32(
     // Compute n as product of all dimensions except the first (handles batching)
     let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
 
-    if c % num_groups != 0 {
+    if !c.is_multiple_of(num_groups) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -273,7 +273,7 @@ pub fn group_norm_f16(
     let c = input.shape()[0];
     let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
 
-    if c % num_groups != 0 {
+    if !c.is_multiple_of(num_groups) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -388,7 +388,7 @@ pub fn l2_norm_f32(
     // Compute n as product of all dimensions except the first (handles batching)
     let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
 
-    if c % head_size != 0 {
+    if !c.is_multiple_of(head_size) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -441,7 +441,7 @@ pub fn l2_norm_f16(
     let c = input.shape()[0];
     let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
 
-    if c % head_size != 0 {
+    if !c.is_multiple_of(head_size) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(

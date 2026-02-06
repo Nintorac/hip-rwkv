@@ -770,7 +770,7 @@ pub fn hip_wkv7_gemv(
 
     let input_len = n * h * t * batch;
     let state_len = n * n * h * batch;
-    let sa_len = n * h * batch;
+    let _sa_len = n * h * batch;
 
     if w_decay.len() != input_len
         || q.len() != input_len

@@ -195,7 +195,7 @@ impl<T: Copy> Clone for PinnedBuffer<T> {
         }
 
         // Allocate a new pinned buffer and copy data
-        let mut new_buf = Self::new(self.len).expect("Failed to allocate pinned buffer for clone");
+        let new_buf = Self::new(self.len).expect("Failed to allocate pinned buffer for clone");
         unsafe {
             std::ptr::copy_nonoverlapping(self.ptr, new_buf.ptr, self.len);
         }

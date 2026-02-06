@@ -8,7 +8,7 @@ mod softmax;
 mod wkv;
 
 pub use elementwise::*;
-pub use fla::*;
+// Note: fla is pub mod but nothing is currently used outside the crate
 pub use norm::*;
 pub use rwkv_ops::*;
 pub use softmax::*;

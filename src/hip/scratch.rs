@@ -413,7 +413,7 @@ impl PrefillScratch {
         let fla_c = config.fla_chunk_size;
         // Packed layout: each sequence boundary can start a new chunk fragment,
         // so max_total_chunks = ceil_div(t, C) + batch_size (safe upper bound).
-        let max_total_chunks = (t + fla_c - 1) / fla_c + b;
+        let max_total_chunks = t.div_ceil(fla_c) + b;
         let head_size = info.head_size;
         let n_head = info.n_head;
         // Per-token buffers: [head_size, n_head, max_prefill_chunk, 1]
@@ -566,7 +566,7 @@ impl PrefillScratch {
         let n_head = self.fla_gi.shape().dim(1);
         let head_size = if n_head > 0 { c / n_head } else { 0 };
         let b = self.config.batch_size;
-        let max_total_chunks = (t + fla_c - 1) / fla_c + b;
+        let max_total_chunks = t.div_ceil(fla_c) + b;
         // 8 per-token buffers: fla_gi, fla_qg, fla_kg, fla_ag, fla_bg, fla_w_wy, fla_u_wy, fla_v_new
         // (fla_ge removed: ge stays in registers in the fused kernel)
         // Each is [head_size, n_head, T, 1] = head_size * n_head * T elements

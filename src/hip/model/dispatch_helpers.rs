@@ -27,7 +27,7 @@ use crate::hip::kernels::{
 use crate::hip::pinned::PinnedBuffer;
 use crate::hip::tensor::{TensorHip, TensorShape};
 
-use super::weights::{AttentionHip, EmbedHip, FfnHip, HeadHip, LayerHip, LayerNormHip};
+use super::weights::{EmbedHip, HeadHip, LayerHip};
 
 #[cfg(feature = "hip-probes")]
 use crate::hip::probe::{self, HipProbeMapRef, ProbeContext};
@@ -319,7 +319,7 @@ pub fn attention_block<F>(
 where
     F: FnOnce(WkvCallInputs<'_>, &mut TensorHip<f32>, &mut TensorHip<f16>) -> Result<()>,
 {
-    let n_embd = head_size * n_head;
+    let _n_embd = head_size * n_head;
 
     // ==== Time-Mix (Attention) ====
     {
@@ -792,7 +792,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn ffn_block(
     layer: &LayerHip,
-    n_embd: usize,
+    _n_embd: usize,
     // Core tensors
     x: &mut TensorHip<f16>,
     x_ln: &mut TensorHip<f16>,
@@ -816,7 +816,7 @@ pub fn ffn_block(
     // Optional probe state
     probe: &mut Option<ProbeState<'_>>,
 ) -> Result<()> {
-    let ffn_hidden = layer.ffn.w_k.shape().dim(0); // ffn hidden dimension
+    let _ffn_hidden = layer.ffn.w_k.shape().dim(0); // ffn hidden dimension
 
     // ==== Channel-Mix (FFN) ====
     {

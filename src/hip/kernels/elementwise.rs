@@ -804,7 +804,7 @@ pub fn broadcast_add_f32(
             ),
         });
     }
-    if input.len() % bias.len() != 0 {
+    if !input.len().is_multiple_of(bias.len()) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -852,7 +852,7 @@ pub fn broadcast_mul_f32(
             ),
         });
     }
-    if input.len() % scale.len() != 0 {
+    if !input.len().is_multiple_of(scale.len()) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -995,7 +995,7 @@ pub fn broadcast_add_f16(
             ),
         });
     }
-    if input.len() % bias.len() != 0 {
+    if !input.len().is_multiple_of(bias.len()) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
@@ -1039,7 +1039,7 @@ pub fn broadcast_mul_f16(
             ),
         });
     }
-    if input.len() % scale.len() != 0 {
+    if !input.len().is_multiple_of(scale.len()) {
         return Err(HipErrorKind {
             code: -1,
             message: format!(
