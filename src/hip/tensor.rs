@@ -67,6 +67,39 @@ impl TensorShape {
         ]
     }
 
+    // ========================================================================
+    // Dimension extraction helpers
+    // ========================================================================
+
+    /// Extract first 3 dimensions as a tuple (dim0, dim1, dim2).
+    ///
+    /// Common use cases:
+    /// - (C, T, B) for channel-major 3D tensors
+    /// - (head_size, n_heads, tokens) for attention components
+    #[inline]
+    pub fn dims_3(&self) -> (usize, usize, usize) {
+        (self.dims[0], self.dims[1], self.dims[2])
+    }
+
+    /// Extract all 4 dimensions as a tuple (dim0, dim1, dim2, dim3).
+    ///
+    /// Common use cases:
+    /// - (N, H, T, B) for WKV tensors: (head_size, n_heads, tokens, batch)
+    /// - (K, H, T, B) for attention tensors
+    #[inline]
+    pub fn dims_4(&self) -> (usize, usize, usize, usize) {
+        (self.dims[0], self.dims[1], self.dims[2], self.dims[3])
+    }
+
+    /// Compute product of dimensions 1, 2, 3 (all except dim 0).
+    ///
+    /// This gives the number of "vectors" when dim 0 is the vector length.
+    /// For shape [C, T, B, 1], returns T * B * 1 = total vectors.
+    #[inline]
+    pub fn flat_count(&self) -> usize {
+        self.dims[1] * self.dims[2] * self.dims[3]
+    }
+
     /// Convert shaped indices to linear index.
     pub fn linear_index(&self, x: usize, y: usize, z: usize, w: usize) -> usize {
         let strides = self.strides();

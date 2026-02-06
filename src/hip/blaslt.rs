@@ -9,7 +9,7 @@
 //! hipBLASLt may provide better performance than rocBLAS for certain GEMM shapes,
 //! especially for mixed precision operations.
 
-use super::blas::validate_gemm_dims;
+use super::blas::{validate_gemm_dims, BlasContext};
 use super::buffer::DeviceBuffer;
 use super::device::Stream;
 use super::ffi::{
@@ -99,16 +99,6 @@ impl HipBlasLtContext {
             workspace,
             workspace_size: DEFAULT_WORKSPACE_SIZE,
         })
-    }
-
-    /// Get a reference to the underlying stream.
-    pub fn stream(&self) -> &Stream {
-        &self.stream
-    }
-
-    /// Synchronize the stream (wait for all enqueued operations to complete).
-    pub fn synchronize(&self) -> Result<()> {
-        self.stream.synchronize()
     }
 
     /// Get the underlying hipBLASLt handle.
@@ -218,6 +208,12 @@ impl Drop for HipBlasLtContext {
         // and is being destroyed exactly once here in Drop.
         let _ = unsafe { hipblaslt_destroy(self.handle) };
         // Stream and workspace are dropped automatically
+    }
+}
+
+impl BlasContext for HipBlasLtContext {
+    fn stream(&self) -> &Stream {
+        &self.stream
     }
 }
 

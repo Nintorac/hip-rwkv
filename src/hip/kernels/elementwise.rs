@@ -3,7 +3,7 @@
 use half::f16;
 use std::ffi::c_int;
 
-use super::host_helpers::{hip_ternary_op, hip_unary_op};
+use super::host_helpers::{hip_ternary_op, hip_unary_op, kernel_launch};
 use super::validation::{
     validate_binary_op, validate_broadcast_op, validate_ternary_op, validate_unary_op,
 };
@@ -33,14 +33,13 @@ macro_rules! dual_precision_unary {
             stream: &Stream,
         ) -> Result<()> {
             validate_unary_op(input, output, stringify!($fn_f32))?;
-            unsafe {
-                check($launcher_f32(
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                input.len() as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -49,14 +48,13 @@ macro_rules! dual_precision_unary {
             stream: &Stream,
         ) -> Result<()> {
             validate_unary_op(input, output, stringify!($fn_f16))?;
-            unsafe {
-                check($launcher_f16(
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                input.len() as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -71,15 +69,14 @@ macro_rules! dual_precision_binary {
             stream: &Stream,
         ) -> Result<()> {
             validate_binary_op(a, b, output, stringify!($fn_f32))?;
-            unsafe {
-                check($launcher_f32(
-                    a.as_ptr(),
-                    b.as_ptr(),
-                    output.as_mut_ptr(),
-                    a.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                a.as_ptr(),
+                b.as_ptr(),
+                output.as_mut_ptr(),
+                a.len() as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -89,15 +86,14 @@ macro_rules! dual_precision_binary {
             stream: &Stream,
         ) -> Result<()> {
             validate_binary_op(a, b, output, stringify!($fn_f16))?;
-            unsafe {
-                check($launcher_f16(
-                    a.as_ptr(),
-                    b.as_ptr(),
-                    output.as_mut_ptr(),
-                    a.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                a.as_ptr(),
+                b.as_ptr(),
+                output.as_mut_ptr(),
+                a.len() as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -113,16 +109,15 @@ macro_rules! dual_precision_ternary {
             stream: &Stream,
         ) -> Result<()> {
             validate_ternary_op(a, b, t, output, stringify!($fn_f32))?;
-            unsafe {
-                check($launcher_f32(
-                    a.as_ptr(),
-                    b.as_ptr(),
-                    t.as_ptr(),
-                    output.as_mut_ptr(),
-                    a.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                a.as_ptr(),
+                b.as_ptr(),
+                t.as_ptr(),
+                output.as_mut_ptr(),
+                a.len() as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -133,16 +128,15 @@ macro_rules! dual_precision_ternary {
             stream: &Stream,
         ) -> Result<()> {
             validate_ternary_op(a, b, t, output, stringify!($fn_f16))?;
-            unsafe {
-                check($launcher_f16(
-                    a.as_ptr(),
-                    b.as_ptr(),
-                    t.as_ptr(),
-                    output.as_mut_ptr(),
-                    a.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                a.as_ptr(),
+                b.as_ptr(),
+                t.as_ptr(),
+                output.as_mut_ptr(),
+                a.len() as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -157,16 +151,15 @@ macro_rules! dual_precision_broadcast {
             stream: &Stream,
         ) -> Result<()> {
             validate_broadcast_op(input, scale, output, stringify!($fn_f32))?;
-            unsafe {
-                check($launcher_f32(
-                    input.as_ptr(),
-                    scale.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len() as c_int,
-                    scale.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                input.as_ptr(),
+                scale.as_ptr(),
+                output.as_mut_ptr(),
+                input.len() as c_int,
+                scale.len() as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -176,16 +169,15 @@ macro_rules! dual_precision_broadcast {
             stream: &Stream,
         ) -> Result<()> {
             validate_broadcast_op(input, scale, output, stringify!($fn_f16))?;
-            unsafe {
-                check($launcher_f16(
-                    input.as_ptr(),
-                    scale.as_ptr(),
-                    output.as_mut_ptr(),
-                    input.len() as c_int,
-                    scale.len() as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                input.as_ptr(),
+                scale.as_ptr(),
+                output.as_mut_ptr(),
+                input.len() as c_int,
+                scale.len() as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -206,14 +198,13 @@ pub fn copy_f32(
             ),
         });
     }
-    unsafe {
-        check(launch_copy_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_copy_f32,
+        input.as_ptr(),
+        output.as_mut_ptr(),
+        input.len() as c_int,
+        stream.handle()
+    )
 }
 
 // GPU-to-GPU copy for TensorHip: output = input
@@ -294,14 +285,13 @@ dual_precision_unary!(negate_f32, negate_f16, launch_negate_f32, launch_negate_f
 /// Note: Only f32 variant exists (no f16 FFI binding).
 pub fn exp_f32(input: &TensorHip<f32>, output: &mut TensorHip<f32>, stream: &Stream) -> Result<()> {
     validate_unary_op(input, output, "exp_f32")?;
-    unsafe {
-        check(launch_exp_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_exp_f32,
+        input.as_ptr(),
+        output.as_mut_ptr(),
+        input.len() as c_int,
+        stream.handle()
+    )
 }
 
 // Broadcast add: output[i] = input[i] + bias[i % bias_len]

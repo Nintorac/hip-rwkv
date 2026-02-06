@@ -8,6 +8,11 @@
 //!
 //! For best performance in forward passes, use `HipBlasContext` to amortize
 //! handle creation cost and enable device-to-device operations.
+//!
+//! ## Common Trait
+//!
+//! The `BlasContext` trait provides a common interface for all BLAS context types,
+//! allowing generic code to work with either `HipBlasContext` or `HipBlasLtContext`.
 
 use std::ffi::c_int;
 
@@ -19,6 +24,32 @@ use super::ffi::{
 };
 use super::tensor::{TensorHip, TensorShape};
 use half::f16;
+
+// ============================================================================
+// BlasContext Trait - Common interface for BLAS context types
+// ============================================================================
+
+/// Common interface for BLAS context types.
+///
+/// This trait abstracts the shared behavior between `HipBlasContext` and
+/// `HipBlasLtContext`, allowing generic code to work with either.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// fn sync_context<C: BlasContext>(ctx: &C) -> Result<()> {
+///     ctx.synchronize()
+/// }
+/// ```
+pub trait BlasContext {
+    /// Get a reference to the underlying stream.
+    fn stream(&self) -> &Stream;
+
+    /// Synchronize the stream (wait for all enqueued operations to complete).
+    fn synchronize(&self) -> Result<()> {
+        self.stream().synchronize()
+    }
+}
 
 // ============================================================================
 // HipBlasContext - Reusable BLAS context for efficient batched operations
@@ -86,16 +117,6 @@ impl HipBlasContext {
         // SAFETY: handle was just created by rocblas_create, so it is valid.
         unsafe { rocblas_set_stream(handle, &stream)? };
         Ok(Self { handle, stream })
-    }
-
-    /// Get a reference to the underlying stream.
-    pub fn stream(&self) -> &Stream {
-        &self.stream
-    }
-
-    /// Synchronize the stream (wait for all enqueued operations to complete).
-    pub fn synchronize(&self) -> Result<()> {
-        self.stream.synchronize()
     }
 
     /// Device-to-device SGEMM: output = weight @ input
@@ -177,6 +198,12 @@ impl Drop for HipBlasContext {
         // and is being destroyed exactly once here in Drop.
         let _ = unsafe { rocblas_destroy(self.handle) };
         // Stream is dropped automatically
+    }
+}
+
+impl BlasContext for HipBlasContext {
+    fn stream(&self) -> &Stream {
+        &self.stream
     }
 }
 

@@ -10,7 +10,7 @@ use std::time::Instant;
 use half::f16;
 
 use hip_rwkv::hip::{
-    device_synchronize, HipBlasContext, HipBlasLtContext, TensorHip, TensorShape,
+    device_synchronize, BlasContext, HipBlasContext, HipBlasLtContext, TensorHip, TensorShape,
 };
 
 /// Test matrix multiply dimensions (typical head layer)

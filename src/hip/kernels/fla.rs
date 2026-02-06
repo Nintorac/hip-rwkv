@@ -9,6 +9,7 @@ use std::ffi::c_int;
 
 use half::f16;
 
+use super::host_helpers::kernel_launch;
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
     check, launch_fla_chunk_h, launch_fla_chunk_o, launch_fla_cumsum_intra,
@@ -215,32 +216,31 @@ pub fn fla_cumsum_intra(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_fla_cumsum_intra(
-            gk.as_ptr(),
-            q.as_ptr(),
-            k.as_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            gi.as_mut_ptr(),
-            qg.as_mut_ptr(),
-            kg.as_mut_ptr(),
-            ag.as_mut_ptr(),
-            bg.as_mut_ptr(),
-            A_qk.as_mut_ptr(),
-            A_qb.as_mut_ptr(),
-            A_ak.as_mut_ptr(),
-            A_ab.as_mut_ptr(),
-            chunk_indices.as_ptr(),
-            cu_seqlens.as_ptr(),
-            batch_offsets.as_ptr(),
-            k_dim as c_int,
-            h as c_int,
-            chunk_size as c_int,
-            total_chunks as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_fla_cumsum_intra,
+        gk.as_ptr(),
+        q.as_ptr(),
+        k.as_ptr(),
+        a.as_ptr(),
+        b.as_ptr(),
+        gi.as_mut_ptr(),
+        qg.as_mut_ptr(),
+        kg.as_mut_ptr(),
+        ag.as_mut_ptr(),
+        bg.as_mut_ptr(),
+        A_qk.as_mut_ptr(),
+        A_qb.as_mut_ptr(),
+        A_ak.as_mut_ptr(),
+        A_ab.as_mut_ptr(),
+        chunk_indices.as_ptr(),
+        cu_seqlens.as_ptr(),
+        batch_offsets.as_ptr(),
+        k_dim as c_int,
+        h as c_int,
+        chunk_size as c_int,
+        total_chunks as c_int,
+        stream.handle()
+    )
 }
 
 /// Launch the FLA WY representation kernel (Stage 3).
@@ -389,25 +389,24 @@ pub fn fla_wy_repr(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_fla_wy_repr(
-            A_ab.as_ptr(),
-            A_ak.as_ptr(),
-            A_ab_inv.as_mut_ptr(),
-            ag.as_ptr(),
-            v.as_ptr(),
-            w_wy.as_mut_ptr(),
-            u_wy.as_mut_ptr(),
-            chunk_indices.as_ptr(),
-            cu_seqlens.as_ptr(),
-            batch_offsets.as_ptr(),
-            k_dim as c_int,
-            h as c_int,
-            chunk_size as c_int,
-            total_chunks as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_fla_wy_repr,
+        A_ab.as_ptr(),
+        A_ak.as_ptr(),
+        A_ab_inv.as_mut_ptr(),
+        ag.as_ptr(),
+        v.as_ptr(),
+        w_wy.as_mut_ptr(),
+        u_wy.as_mut_ptr(),
+        chunk_indices.as_ptr(),
+        cu_seqlens.as_ptr(),
+        batch_offsets.as_ptr(),
+        k_dim as c_int,
+        h as c_int,
+        chunk_size as c_int,
+        total_chunks as c_int,
+        stream.handle()
+    )
 }
 
 /// Launch the FLA inter-chunk state recurrence kernel (Stage 4).
@@ -583,27 +582,26 @@ pub fn fla_chunk_h(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_fla_chunk_h(
-            kg.as_ptr(),
-            bg.as_ptr(),
-            v.as_ptr(),
-            w_wy.as_ptr(),
-            u_wy.as_ptr(),
-            gi.as_ptr(),
-            state.as_mut_ptr(),
-            h_out.as_mut_ptr(),
-            v_new.as_mut_ptr(),
-            chunk_offsets.as_ptr(),
-            cu_seqlens.as_ptr(),
-            batch_offsets.as_ptr(),
-            k_dim as c_int,
-            h as c_int,
-            chunk_size as c_int,
-            n_seq as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_fla_chunk_h,
+        kg.as_ptr(),
+        bg.as_ptr(),
+        v.as_ptr(),
+        w_wy.as_ptr(),
+        u_wy.as_ptr(),
+        gi.as_ptr(),
+        state.as_mut_ptr(),
+        h_out.as_mut_ptr(),
+        v_new.as_mut_ptr(),
+        chunk_offsets.as_ptr(),
+        cu_seqlens.as_ptr(),
+        batch_offsets.as_ptr(),
+        k_dim as c_int,
+        h as c_int,
+        chunk_size as c_int,
+        n_seq as c_int,
+        stream.handle()
+    )
 }
 
 /// Launch the FLA output combination kernel (Stage 5).
@@ -785,25 +783,24 @@ pub fn fla_chunk_o(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_fla_chunk_o(
-            qg.as_ptr(),
-            v.as_ptr(),
-            v_new.as_ptr(),
-            A_qk.as_ptr(),
-            A_qb.as_ptr(),
-            h.as_ptr(),
-            o.as_mut_ptr(),
-            chunk_indices.as_ptr(),
-            cu_seqlens.as_ptr(),
-            batch_offsets.as_ptr(),
-            k_dim as c_int,
-            h_dim as c_int,
-            chunk_size as c_int,
-            total_chunks as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_fla_chunk_o,
+        qg.as_ptr(),
+        v.as_ptr(),
+        v_new.as_ptr(),
+        A_qk.as_ptr(),
+        A_qb.as_ptr(),
+        h.as_ptr(),
+        o.as_mut_ptr(),
+        chunk_indices.as_ptr(),
+        cu_seqlens.as_ptr(),
+        batch_offsets.as_ptr(),
+        k_dim as c_int,
+        h_dim as c_int,
+        chunk_size as c_int,
+        total_chunks as c_int,
+        stream.handle()
+    )
 }
 
 /// Convert f16 raw log-decay att_w to f32 gk = -exp(att_w).
@@ -847,14 +844,13 @@ pub fn fla_neg_exp_f16_to_f32(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_fla_neg_exp_f16_to_f32(
-            att_w.as_ptr(),
-            gk.as_mut_ptr(),
-            n as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_fla_neg_exp_f16_to_f32,
+        att_w.as_ptr(),
+        gk.as_mut_ptr(),
+        n as c_int,
+        stream.handle()
+    )
 }
 
 /// Transpose each K x K WKV state matrix (out-of-place).
@@ -932,16 +928,15 @@ pub fn state_transpose(
         return Ok(());
     }
 
-    unsafe {
-        check(launch_state_transpose(
-            src.as_ptr(),
-            dst.as_mut_ptr(),
-            k as c_int,
-            num_heads as c_int,
-            batch_size as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_state_transpose,
+        src.as_ptr(),
+        dst.as_mut_ptr(),
+        k as c_int,
+        num_heads as c_int,
+        batch_size as c_int,
+        stream.handle()
+    )
 }
 
 #[cfg(test)]

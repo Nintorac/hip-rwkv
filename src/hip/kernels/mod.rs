@@ -1,4 +1,7 @@
 //! HIP kernel wrapper functions.
+//!
+//! All kernel wrappers use the `kernel_launch!` macro from `host_helpers` to abstract
+//! the `unsafe { check(launch_*(...)) }` pattern and centralize safety documentation.
 
 mod elementwise;
 pub mod fla;

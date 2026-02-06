@@ -104,7 +104,7 @@ pub use kernels::{
 // Re-export BLAS functions and context
 pub use blas::{
     hgemm_f16, hip_hgemm, hip_sgemm, rocblas_create, rocblas_destroy, rocblas_set_stream,
-    sgemm_f32, HipBlasContext,
+    sgemm_f32, BlasContext, HipBlasContext,
 };
 
 // Re-export hipBLASLt functions and context

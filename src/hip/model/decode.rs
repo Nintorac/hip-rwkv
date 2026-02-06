@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 
+use super::super::blas::BlasContext;
 use super::dispatch_helpers::{self, ProbeState};
 use super::prefill::{RecurrentWkv, WkvInput, WkvKernel};
 use super::state::{HipState, StateLayout};

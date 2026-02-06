@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use half::f16;
 
+use super::super::blas::BlasContext;
 use super::dispatch_helpers::{self, ProbeState};
 use super::fla::ChunkWkv;
 use super::state::{HipState, StateLayout};

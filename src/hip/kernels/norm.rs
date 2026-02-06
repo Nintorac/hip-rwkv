@@ -3,6 +3,7 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::host_helpers::kernel_launch;
 use super::validation::{require_contiguous_4, require_contiguous_pair};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
@@ -28,7 +29,7 @@ macro_rules! dual_precision_group_norm {
             stream: &Stream,
         ) -> Result<()> {
             let c = input.shape()[0];
-            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+            let n = input.shape().flat_count();
 
             if !c.is_multiple_of(num_groups) {
                 return Err(HipErrorKind {
@@ -39,7 +40,7 @@ macro_rules! dual_precision_group_norm {
                     ),
                 });
             }
-            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            let out_n = output.shape().flat_count();
             if output.shape()[0] != c || out_n != n {
                 return Err(HipErrorKind {
                     code: -1,
@@ -51,19 +52,18 @@ macro_rules! dual_precision_group_norm {
             }
             require_contiguous_pair(input, output, stringify!($fn_f32))?;
 
-            unsafe {
-                check($launcher_f32(
-                    input.as_ptr(),
-                    weight.as_ptr(),
-                    bias.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    n as c_int,
-                    num_groups as c_int,
-                    eps,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                input.as_ptr(),
+                weight.as_ptr(),
+                bias.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                n as c_int,
+                num_groups as c_int,
+                eps,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -76,7 +76,7 @@ macro_rules! dual_precision_group_norm {
             stream: &Stream,
         ) -> Result<()> {
             let c = input.shape()[0];
-            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+            let n = input.shape().flat_count();
 
             if !c.is_multiple_of(num_groups) {
                 return Err(HipErrorKind {
@@ -87,7 +87,7 @@ macro_rules! dual_precision_group_norm {
                     ),
                 });
             }
-            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            let out_n = output.shape().flat_count();
             if output.shape()[0] != c || out_n != n {
                 return Err(HipErrorKind {
                     code: -1,
@@ -99,19 +99,18 @@ macro_rules! dual_precision_group_norm {
             }
             require_contiguous_pair(input, output, stringify!($fn_f16))?;
 
-            unsafe {
-                check($launcher_f16(
-                    input.as_ptr(),
-                    weight.as_ptr(),
-                    bias.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    n as c_int,
-                    num_groups as c_int,
-                    eps,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                input.as_ptr(),
+                weight.as_ptr(),
+                bias.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                n as c_int,
+                num_groups as c_int,
+                eps,
+                stream.handle()
+            )
         }
     };
 }
@@ -127,7 +126,7 @@ macro_rules! dual_precision_l2_norm {
             stream: &Stream,
         ) -> Result<()> {
             let c = input.shape()[0];
-            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+            let n = input.shape().flat_count();
 
             if !c.is_multiple_of(head_size) {
                 return Err(HipErrorKind {
@@ -138,7 +137,7 @@ macro_rules! dual_precision_l2_norm {
                     ),
                 });
             }
-            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            let out_n = output.shape().flat_count();
             if output.shape()[0] != c || out_n != n {
                 return Err(HipErrorKind {
                     code: -1,
@@ -150,17 +149,16 @@ macro_rules! dual_precision_l2_norm {
             }
             require_contiguous_pair(input, output, stringify!($fn_f32))?;
 
-            unsafe {
-                check($launcher_f32(
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    n as c_int,
-                    head_size as c_int,
-                    eps,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                n as c_int,
+                head_size as c_int,
+                eps,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -171,7 +169,7 @@ macro_rules! dual_precision_l2_norm {
             stream: &Stream,
         ) -> Result<()> {
             let c = input.shape()[0];
-            let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+            let n = input.shape().flat_count();
 
             if !c.is_multiple_of(head_size) {
                 return Err(HipErrorKind {
@@ -182,7 +180,7 @@ macro_rules! dual_precision_l2_norm {
                     ),
                 });
             }
-            let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+            let out_n = output.shape().flat_count();
             if output.shape()[0] != c || out_n != n {
                 return Err(HipErrorKind {
                     code: -1,
@@ -194,17 +192,16 @@ macro_rules! dual_precision_l2_norm {
             }
             require_contiguous_pair(input, output, stringify!($fn_f16))?;
 
-            unsafe {
-                check($launcher_f16(
-                    input.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    n as c_int,
-                    head_size as c_int,
-                    eps,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                input.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                n as c_int,
+                head_size as c_int,
+                eps,
+                stream.handle()
+            )
         }
     };
 }
@@ -233,11 +230,10 @@ pub fn layer_norm_f32(
 ) -> Result<()> {
     // Input shape: [C, T, B, 1] - treat T*B as total vectors
     let c = input.shape()[0]; // Channel dimension (normalize over this)
-                              // Compute n as product of all dimensions except the first (handles batching)
-    let n = input.shape()[1] * input.shape()[2] * input.shape()[3];
+    let n = input.shape().flat_count(); // Product of all dimensions except the first
 
     // Validate shapes - output should have same total size
-    let out_n = output.shape()[1] * output.shape()[2] * output.shape()[3];
+    let out_n = output.shape().flat_count();
     if output.shape()[0] != c || out_n != n {
         return Err(HipErrorKind {
             code: -1,
@@ -263,18 +259,17 @@ pub fn layer_norm_f32(
     }
     require_contiguous_pair(input, output, "layer_norm_f32")?;
 
-    unsafe {
-        check(launch_layer_norm_f32(
-            input.as_ptr(),
-            weight.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_layer_norm_f32,
+        input.as_ptr(),
+        weight.as_ptr(),
+        bias.as_ptr(),
+        output.as_mut_ptr(),
+        c as c_int,
+        n as c_int,
+        eps,
+        stream.handle()
+    )
 }
 
 pub fn layer_norm_f16(
@@ -287,7 +282,7 @@ pub fn layer_norm_f16(
 ) -> Result<()> {
     let shape = input.shape();
     let c = shape[0];
-    let n = shape[1] * shape[2] * shape[3];
+    let n = shape.flat_count();
     if input.len() != output.len() || weight.len() != c || bias.len() != c {
         return Err(HipErrorKind {
             code: -1,
@@ -295,18 +290,17 @@ pub fn layer_norm_f16(
         });
     }
     require_contiguous_4(input, output, weight, bias, "layer_norm_f16")?;
-    unsafe {
-        check(launch_layer_norm_f16(
-            input.as_ptr(),
-            weight.as_ptr(),
-            bias.as_ptr(),
-            output.as_mut_ptr(),
-            c as c_int,
-            n as c_int,
-            eps,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_layer_norm_f16,
+        input.as_ptr(),
+        weight.as_ptr(),
+        bias.as_ptr(),
+        output.as_mut_ptr(),
+        c as c_int,
+        n as c_int,
+        eps,
+        stream.handle()
+    )
 }
 
 /// Compute layer normalization on host data, returning results.

@@ -3,6 +3,7 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::host_helpers::kernel_launch;
 use super::validation::{require_all_contiguous, require_contiguous_5};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{check, launch_wkv_bonus_f16, launch_wkv_bonus_f32, HipErrorKind, Result};
@@ -23,10 +24,7 @@ macro_rules! dual_precision_wkv_bonus {
             output: &mut TensorHip<f32>,
             stream: &Stream,
         ) -> Result<()> {
-            let n = r.shape()[0]; // head_size
-            let h = r.shape()[1]; // n_heads
-            let t = r.shape()[2]; // tokens
-            let b = r.shape()[3]; // batch
+            let (n, h, t, b) = r.shape().dims_4(); // (head_size, n_heads, tokens, batch)
 
             // Validate shapes
             if k.shape() != r.shape() || v.shape() != r.shape() {
@@ -61,20 +59,19 @@ macro_rules! dual_precision_wkv_bonus {
             }
             require_contiguous_5(r, k, v, r_k, output, stringify!($fn_f32))?;
 
-            unsafe {
-                check($launcher_f32(
-                    r.as_ptr(),
-                    k.as_ptr(),
-                    v.as_ptr(),
-                    r_k.as_ptr(),
-                    output.as_mut_ptr(),
-                    n as c_int,
-                    h as c_int,
-                    t as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                r.as_ptr(),
+                k.as_ptr(),
+                v.as_ptr(),
+                r_k.as_ptr(),
+                output.as_mut_ptr(),
+                n as c_int,
+                h as c_int,
+                t as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -85,27 +82,23 @@ macro_rules! dual_precision_wkv_bonus {
             output: &mut TensorHip<f16>,
             stream: &Stream,
         ) -> Result<()> {
-            let n = r.shape()[0];
-            let h = r.shape()[1];
-            let t = r.shape()[2];
-            let b = r.shape()[3];
+            let (n, h, t, b) = r.shape().dims_4();
 
             require_contiguous_5(r, k, v, r_k, output, stringify!($fn_f16))?;
 
-            unsafe {
-                check($launcher_f16(
-                    r.as_ptr(),
-                    k.as_ptr(),
-                    v.as_ptr(),
-                    r_k.as_ptr(),
-                    output.as_mut_ptr(),
-                    n as c_int,
-                    h as c_int,
-                    t as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                r.as_ptr(),
+                k.as_ptr(),
+                v.as_ptr(),
+                r_k.as_ptr(),
+                output.as_mut_ptr(),
+                n as c_int,
+                h as c_int,
+                t as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -197,10 +190,7 @@ pub fn wkv7_wave_reduce(
 ) -> Result<()> {
     use crate::hip::ffi::launch_wkv7_wave_reduce;
 
-    let n = w_decay.shape()[0];
-    let h = w_decay.shape()[1];
-    let t = w_decay.shape()[2];
-    let b_size = w_decay.shape()[3];
+    let (n, h, t, b_size) = w_decay.shape().dims_4();
 
     // Validate shapes
     let input_shape = w_decay.shape();
@@ -250,25 +240,24 @@ pub fn wkv7_wave_reduce(
 
     // Pass state.as_ptr() as state_in and state.as_mut_ptr() as state_out.
     // The kernel loads state into LDS before writing, so aliasing is safe.
-    unsafe {
-        check(launch_wkv7_wave_reduce(
-            w_decay.as_ptr(),
-            q.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            state.as_ptr(),
-            output.as_mut_ptr(),
-            state.as_mut_ptr(),
-            lengths.as_ptr(),
-            n as c_int,
-            h as c_int,
-            t as c_int,
-            b_size as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_wkv7_wave_reduce,
+        w_decay.as_ptr(),
+        q.as_ptr(),
+        k.as_ptr(),
+        v.as_ptr(),
+        a.as_ptr(),
+        b.as_ptr(),
+        state.as_ptr(),
+        output.as_mut_ptr(),
+        state.as_mut_ptr(),
+        lengths.as_ptr(),
+        n as c_int,
+        h as c_int,
+        t as c_int,
+        b_size as c_int,
+        stream.handle()
+    )
 }
 
 /// Fused WKV7 kernel for T=1 decode.
@@ -292,10 +281,7 @@ pub fn wkv7_fused_t1(
 ) -> Result<()> {
     use crate::hip::ffi::launch_wkv7_fused_t1;
 
-    let n = w_decay.shape()[0];
-    let h = w_decay.shape()[1];
-    let t = w_decay.shape()[2];
-    let b_size = w_decay.shape()[3];
+    let (n, h, t, b_size) = w_decay.shape().dims_4();
 
     if t != 1 {
         return Err(HipErrorKind {
@@ -367,21 +353,20 @@ pub fn wkv7_fused_t1(
         "wkv7_fused_t1",
     )?;
 
-    unsafe {
-        check(launch_wkv7_fused_t1(
-            w_decay.as_ptr(),
-            q.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            state.as_mut_ptr(),
-            output.as_mut_ptr(),
-            lengths.as_ptr(),
-            n as c_int,
-            h as c_int,
-            b_size as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_wkv7_fused_t1,
+        w_decay.as_ptr(),
+        q.as_ptr(),
+        k.as_ptr(),
+        v.as_ptr(),
+        a.as_ptr(),
+        b.as_ptr(),
+        state.as_mut_ptr(),
+        output.as_mut_ptr(),
+        lengths.as_ptr(),
+        n as c_int,
+        h as c_int,
+        b_size as c_int,
+        stream.handle()
+    )
 }

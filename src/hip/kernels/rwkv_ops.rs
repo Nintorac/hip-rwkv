@@ -3,6 +3,7 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::host_helpers::kernel_launch;
 use super::validation::{require_all_contiguous, require_contiguous_4, validate_unary_op};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
@@ -71,20 +72,19 @@ macro_rules! dual_precision_channel_mix_state {
                 });
             }
 
-            unsafe {
-                check($launcher_f32(
-                    x.as_ptr(),
-                    state_in.as_ptr(),
-                    x_k.as_ptr(),
-                    output.as_mut_ptr(),
-                    state_out.as_mut_ptr(),
-                    lengths.as_ptr() as *const c_int,
-                    batch_offsets.as_ptr() as *const c_int,
-                    c as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                x.as_ptr(),
+                state_in.as_ptr(),
+                x_k.as_ptr(),
+                output.as_mut_ptr(),
+                state_out.as_mut_ptr(),
+                lengths.as_ptr() as *const c_int,
+                batch_offsets.as_ptr() as *const c_int,
+                c as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -138,20 +138,19 @@ macro_rules! dual_precision_channel_mix_state {
                 });
             }
 
-            unsafe {
-                check($launcher_f16(
-                    x.as_ptr(),
-                    state_in.as_ptr(),
-                    x_k.as_ptr(),
-                    output.as_mut_ptr(),
-                    state_out.as_mut_ptr(),
-                    lengths.as_ptr() as *const c_int,
-                    batch_offsets.as_ptr() as *const c_int,
-                    c as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                x.as_ptr(),
+                state_in.as_ptr(),
+                x_k.as_ptr(),
+                output.as_mut_ptr(),
+                state_out.as_mut_ptr(),
+                lengths.as_ptr() as *const c_int,
+                batch_offsets.as_ptr() as *const c_int,
+                c as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -166,9 +165,7 @@ macro_rules! dual_precision_control_k {
             output: &mut TensorHip<f32>,
             stream: &Stream,
         ) -> Result<()> {
-            let c = k.shape()[0];
-            let t = k.shape()[1];
-            let b = k.shape()[2];
+            let (c, t, b) = k.shape().dims_3();
 
             if output.shape() != k.shape() {
                 return Err(HipErrorKind {
@@ -202,18 +199,17 @@ macro_rules! dual_precision_control_k {
             }
             require_contiguous_4(k_a, a, k, output, stringify!($fn_f32))?;
 
-            unsafe {
-                check($launcher_f32(
-                    k_a.as_ptr(),
-                    a.as_ptr(),
-                    k.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    t as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f32,
+                k_a.as_ptr(),
+                a.as_ptr(),
+                k.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                t as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
 
         pub fn $fn_f16(
@@ -223,9 +219,7 @@ macro_rules! dual_precision_control_k {
             output: &mut TensorHip<f16>,
             stream: &Stream,
         ) -> Result<()> {
-            let c = a.shape()[0];
-            let t = a.shape()[1];
-            let b = a.shape()[2];
+            let (c, t, b) = a.shape().dims_3();
 
             if k_a.shape()[0] != c || k.shape() != a.shape() || output.shape() != a.shape() {
                 return Err(HipErrorKind {
@@ -242,18 +236,17 @@ macro_rules! dual_precision_control_k {
             }
             require_contiguous_4(k_a, a, k, output, stringify!($fn_f16))?;
 
-            unsafe {
-                check($launcher_f16(
-                    k_a.as_ptr(),
-                    a.as_ptr(),
-                    k.as_ptr(),
-                    output.as_mut_ptr(),
-                    c as c_int,
-                    t as c_int,
-                    b as c_int,
-                    stream.handle(),
-                ))
-            }
+            kernel_launch!(
+                $launcher_f16,
+                k_a.as_ptr(),
+                a.as_ptr(),
+                k.as_ptr(),
+                output.as_mut_ptr(),
+                c as c_int,
+                t as c_int,
+                b as c_int,
+                stream.handle()
+            )
         }
     };
 }
@@ -268,14 +261,13 @@ pub fn copy_f16_to_f32(
     stream: &Stream,
 ) -> Result<()> {
     validate_unary_op(input, output, "copy_f16_to_f32")?;
-    unsafe {
-        check(launch_copy_f16_to_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_copy_f16_to_f32,
+        input.as_ptr(),
+        output.as_mut_ptr(),
+        input.len() as c_int,
+        stream.handle()
+    )
 }
 
 /// Launch the token shift kernel.
@@ -331,18 +323,17 @@ pub fn token_shift_f32(
         });
     }
 
-    unsafe {
-        check(launch_token_shift_f32(
-            x.as_ptr(),
-            state_in.as_ptr(),
-            mix.as_ptr(),
-            output.as_mut_ptr(),
-            state_out.as_mut_ptr(),
-            c as c_int,
-            t as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_token_shift_f32,
+        x.as_ptr(),
+        state_in.as_ptr(),
+        mix.as_ptr(),
+        output.as_mut_ptr(),
+        state_out.as_mut_ptr(),
+        c as c_int,
+        t as c_int,
+        stream.handle()
+    )
 }
 
 /// Compute token shift on host data, returning (output, state_out).
@@ -572,11 +563,8 @@ pub unsafe fn wkv7_gemv_f32(
     sa_tmp: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    // Input shape: [N, H, T, B]
-    let n = w_decay.shape()[0]; // head_size
-    let h = w_decay.shape()[1]; // n_heads
-    let t = w_decay.shape()[2]; // tokens
-    let b_size = w_decay.shape()[3]; // batch
+    // Input shape: [N, H, T, B] - (head_size, n_heads, tokens, batch)
+    let (n, h, t, b_size) = w_decay.shape().dims_4();
 
     // Validate input shapes
     let input_shape = w_decay.shape();
@@ -665,7 +653,8 @@ pub unsafe fn wkv7_gemv_f32(
         "wkv7_gemv_f32",
     )?;
 
-    check(launch_wkv7_gemv(
+    kernel_launch!(
+        launch_wkv7_gemv,
         handle,
         w_decay.as_ptr(),
         q.as_ptr(),
@@ -681,8 +670,8 @@ pub unsafe fn wkv7_gemv_f32(
         h as c_int,
         t as c_int,
         b_size as c_int,
-        stream.handle(),
-    ))
+        stream.handle()
+    )
 }
 
 /// Compute WKV7 using rocBLAS GEMV on host data, returning (output, state_out).

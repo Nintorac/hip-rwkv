@@ -22,6 +22,7 @@ use half::f16;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use super::blas::BlasContext;
 use super::device::Stream;
 use super::ffi::{HipErrorKind, Result};
 use super::scratch::PrefillScratch;

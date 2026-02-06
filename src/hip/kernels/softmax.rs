@@ -2,6 +2,7 @@
 
 use std::ffi::c_int;
 
+use super::host_helpers::kernel_launch;
 use crate::hip::buffer::DeviceBuffer;
 use crate::hip::device::Stream;
 use crate::hip::ffi::{check, launch_softmax_f32, Result};
@@ -24,13 +25,12 @@ pub fn softmax_f32(
     num_tokens: usize,
     stream: &Stream,
 ) -> Result<()> {
-    unsafe {
-        check(launch_softmax_f32(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            vocab_size as c_int,
-            num_tokens as c_int,
-            stream.handle(),
-        ))
-    }
+    kernel_launch!(
+        launch_softmax_f32,
+        input.as_ptr(),
+        output.as_mut_ptr(),
+        vocab_size as c_int,
+        num_tokens as c_int,
+        stream.handle()
+    )
 }
