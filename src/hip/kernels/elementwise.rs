@@ -3,37 +3,19 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::validation::{
+    validate_binary_op, validate_broadcast_op, validate_ternary_op, validate_unary_op,
+};
 use crate::hip::buffer::DeviceBuffer;
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
-    check,
-    launch_add_f16,
-    launch_add_f32,
-    launch_broadcast_add_f16,
-    launch_broadcast_add_f32,
-    launch_broadcast_mul_f16,
-    launch_broadcast_mul_f32,
-    launch_copy_f16,
-    launch_copy_f32,
-    launch_decay_exp_f16,
-    launch_decay_exp_f32,
-    launch_exp_f32,
-    launch_lerp_f16,
-    launch_lerp_f32,
-    launch_mul_f16,
-    launch_mul_f32,
-    launch_negate_f16,
-    launch_negate_f32,
-    launch_sigmoid_f16,
-    launch_sigmoid_f32,
-    launch_softplus_decay_f16,
-    launch_softplus_decay_f32,
-    launch_squared_relu_f16,
-    launch_squared_relu_f32,
-    launch_tanh_f16,
-    launch_tanh_f32,
-    HipErrorKind,
-    Result,
+    check, launch_add_f16, launch_add_f32, launch_broadcast_add_f16, launch_broadcast_add_f32,
+    launch_broadcast_mul_f16, launch_broadcast_mul_f32, launch_copy_f16, launch_copy_f32,
+    launch_decay_exp_f16, launch_decay_exp_f32, launch_exp_f32, launch_lerp_f16, launch_lerp_f32,
+    launch_mul_f16, launch_mul_f32, launch_negate_f16, launch_negate_f32, launch_sigmoid_f16,
+    launch_sigmoid_f32, launch_softplus_decay_f16, launch_softplus_decay_f32,
+    launch_squared_relu_f16, launch_squared_relu_f32, launch_tanh_f16, launch_tanh_f32,
+    HipErrorKind, Result,
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
@@ -72,22 +54,7 @@ pub fn copy_tensor_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "copy_tensor_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "copy_tensor_f32")?;
     unsafe {
         check(launch_copy_f32(
             input.as_ptr(),
@@ -104,22 +71,7 @@ pub fn copy_tensor_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "copy_tensor_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "copy_tensor_f16")?;
     unsafe {
         check(launch_copy_f16(
             input.as_ptr(),
@@ -158,22 +110,7 @@ pub fn decay_exp_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "decay_exp_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "decay_exp_f32")?;
     unsafe {
         check(launch_decay_exp_f32(
             input.as_ptr(),
@@ -189,22 +126,7 @@ pub fn decay_exp_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "decay_exp_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "decay_exp_f16")?;
     unsafe {
         check(launch_decay_exp_f16(
             input.as_ptr(),
@@ -240,32 +162,14 @@ pub fn lerp_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    let n = a.len();
-    if b.len() != n || t.len() != n || output.len() != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, t={}, output={}",
-                n,
-                b.len(),
-                t.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !t.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "lerp_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_ternary_op(a, b, t, output, "lerp_f32")?;
     unsafe {
         check(launch_lerp_f32(
             a.as_ptr(),
             b.as_ptr(),
             t.as_ptr(),
             output.as_mut_ptr(),
-            n as c_int,
+            a.len() as c_int,
             stream.handle(),
         ))
     }
@@ -278,32 +182,14 @@ pub fn lerp_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    let n = a.len();
-    if b.len() != n || t.len() != n || output.len() != n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, t={}, output={}",
-                n,
-                b.len(),
-                t.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !t.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "lerp_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_ternary_op(a, b, t, output, "lerp_f16")?;
     unsafe {
         check(launch_lerp_f16(
             a.as_ptr(),
             b.as_ptr(),
             t.as_ptr(),
             output.as_mut_ptr(),
-            n as c_int,
+            a.len() as c_int,
             stream.handle(),
         ))
     }
@@ -340,22 +226,7 @@ pub fn sigmoid_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "sigmoid_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "sigmoid_f32")?;
     unsafe {
         check(launch_sigmoid_f32(
             input.as_ptr(),
@@ -371,22 +242,7 @@ pub fn sigmoid_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "sigmoid_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "sigmoid_f16")?;
     unsafe {
         check(launch_sigmoid_f16(
             input.as_ptr(),
@@ -419,22 +275,7 @@ pub fn squared_relu_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "squared_relu_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "squared_relu_f32")?;
     unsafe {
         check(launch_squared_relu_f32(
             input.as_ptr(),
@@ -450,22 +291,7 @@ pub fn squared_relu_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "squared_relu_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "squared_relu_f16")?;
     unsafe {
         check(launch_squared_relu_f16(
             input.as_ptr(),
@@ -499,22 +325,7 @@ pub fn softplus_decay_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "softplus_decay_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "softplus_decay_f32")?;
     unsafe {
         check(launch_softplus_decay_f32(
             input.as_ptr(),
@@ -530,22 +341,7 @@ pub fn softplus_decay_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "softplus_decay_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "softplus_decay_f16")?;
     unsafe {
         check(launch_softplus_decay_f16(
             input.as_ptr(),
@@ -576,22 +372,7 @@ pub fn tanh_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "tanh_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "tanh_f32")?;
     unsafe {
         check(launch_tanh_f32(
             input.as_ptr(),
@@ -607,22 +388,7 @@ pub fn tanh_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "tanh_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "tanh_f16")?;
     unsafe {
         check(launch_tanh_f16(
             input.as_ptr(),
@@ -659,23 +425,7 @@ pub fn add_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if a.len() != b.len() || a.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, output={}",
-                a.len(),
-                b.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "add_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_binary_op(a, b, output, "add_f32")?;
     unsafe {
         check(launch_add_f32(
             a.as_ptr(),
@@ -696,23 +446,7 @@ pub fn mul_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if a.len() != b.len() || a.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, output={}",
-                a.len(),
-                b.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "mul_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_binary_op(a, b, output, "mul_f32")?;
     unsafe {
         check(launch_mul_f32(
             a.as_ptr(),
@@ -730,22 +464,7 @@ pub fn negate_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "negate_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "negate_f32")?;
     unsafe {
         check(launch_negate_f32(
             input.as_ptr(),
@@ -758,22 +477,7 @@ pub fn negate_f32(
 
 /// Exponential: output = exp(input)
 pub fn exp_f32(input: &TensorHip<f32>, output: &mut TensorHip<f32>, stream: &Stream) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "exp_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "exp_f32")?;
     unsafe {
         check(launch_exp_f32(
             input.as_ptr(),
@@ -794,32 +498,7 @@ pub fn broadcast_add_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.len().is_multiple_of(bias.len()) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Broadcast incompatible: input len {} not divisible by bias len {}",
-                input.len(),
-                bias.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !bias.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "broadcast_add_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_broadcast_op(input, bias, output, "broadcast_add_f32")?;
     unsafe {
         check(launch_broadcast_add_f32(
             input.as_ptr(),
@@ -842,32 +521,7 @@ pub fn broadcast_mul_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.len().is_multiple_of(scale.len()) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Broadcast incompatible: input len {} not divisible by scale len {}",
-                input.len(),
-                scale.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !scale.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "broadcast_mul_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_broadcast_op(input, scale, output, "broadcast_mul_f32")?;
     unsafe {
         check(launch_broadcast_mul_f32(
             input.as_ptr(),
@@ -886,23 +540,7 @@ pub fn add_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if a.len() != b.len() || a.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, output={}",
-                a.len(),
-                b.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "add_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_binary_op(a, b, output, "add_f16")?;
     unsafe {
         check(launch_add_f16(
             a.as_ptr(),
@@ -920,23 +558,7 @@ pub fn mul_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if a.len() != b.len() || a.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: a={}, b={}, output={}",
-                a.len(),
-                b.len(),
-                output.len()
-            ),
-        });
-    }
-    if !a.is_contiguous() || !b.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "mul_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_binary_op(a, b, output, "mul_f16")?;
     unsafe {
         check(launch_mul_f16(
             a.as_ptr(),
@@ -953,22 +575,7 @@ pub fn negate_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "negate_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "negate_f16")?;
     unsafe {
         check(launch_negate_f16(
             input.as_ptr(),
@@ -985,32 +592,7 @@ pub fn broadcast_add_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.len().is_multiple_of(bias.len()) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Broadcast incompatible: input len {} not divisible by bias len {}",
-                input.len(),
-                bias.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !bias.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "broadcast_add_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_broadcast_op(input, bias, output, "broadcast_add_f16")?;
     unsafe {
         check(launch_broadcast_add_f16(
             input.as_ptr(),
@@ -1029,32 +611,7 @@ pub fn broadcast_mul_f16(
     output: &mut TensorHip<f16>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.len().is_multiple_of(scale.len()) {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Broadcast incompatible: input len {} not divisible by scale len {}",
-                input.len(),
-                scale.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !scale.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "broadcast_mul_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_broadcast_op(input, scale, output, "broadcast_mul_f16")?;
     unsafe {
         check(launch_broadcast_mul_f16(
             input.as_ptr(),

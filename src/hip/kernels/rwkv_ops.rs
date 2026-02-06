@@ -3,20 +3,13 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::validation::{require_all_contiguous, require_contiguous_4, validate_unary_op};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
-    check,
-    launch_channel_mix_state_f16,
-    launch_channel_mix_state_f32,
-    launch_control_k_f16,
-    launch_control_k_f32,
-    launch_copy_f16_to_f32,
-    launch_token_shift_f32,
+    check, launch_channel_mix_state_f16, launch_channel_mix_state_f32, launch_control_k_f16,
+    launch_control_k_f32, launch_copy_f16_to_f32, launch_token_shift_f32,
     // WKV7 GEMV operations
-    launch_wkv7_gemv,
-    HipErrorKind,
-    Result,
-    RocblasHandle,
+    launch_wkv7_gemv, HipErrorKind, Result, RocblasHandle,
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
@@ -29,22 +22,7 @@ pub fn copy_f16_to_f32(
     output: &mut TensorHip<f32>,
     stream: &Stream,
 ) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input {} vs output {}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "copy_f16_to_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    validate_unary_op(input, output, "copy_f16_to_f32")?;
     unsafe {
         check(launch_copy_f16_to_f32(
             input.as_ptr(),
@@ -466,12 +444,7 @@ pub fn control_k_f32(
             ),
         });
     }
-    if !k_a.is_contiguous() || !a.is_contiguous() || !k.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "control_k_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_4(k_a, a, k, output, "control_k_f32")?;
 
     unsafe {
         check(launch_control_k_f32(
@@ -510,12 +483,7 @@ pub fn control_k_f16(
             ),
         });
     }
-    if !k_a.is_contiguous() || !a.is_contiguous() || !k.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "control_k_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_4(k_a, a, k, output, "control_k_f16")?;
 
     unsafe {
         check(launch_control_k_f16(
@@ -705,22 +673,21 @@ pub unsafe fn wkv7_gemv_f32(
     }
 
     // Check contiguity
-    if !w_decay.is_contiguous()
-        || !q.is_contiguous()
-        || !k.is_contiguous()
-        || !v.is_contiguous()
-        || !a.is_contiguous()
-        || !b.is_contiguous()
-        || !state_in.is_contiguous()
-        || !output.is_contiguous()
-        || !state_out.is_contiguous()
-        || !sa_tmp.is_contiguous()
-    {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "wkv7_gemv_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_all_contiguous(
+        &[
+            w_decay.is_contiguous(),
+            q.is_contiguous(),
+            k.is_contiguous(),
+            v.is_contiguous(),
+            a.is_contiguous(),
+            b.is_contiguous(),
+            state_in.is_contiguous(),
+            output.is_contiguous(),
+            state_out.is_contiguous(),
+            sa_tmp.is_contiguous(),
+        ],
+        "wkv7_gemv_f32",
+    )?;
 
     check(launch_wkv7_gemv(
         handle,

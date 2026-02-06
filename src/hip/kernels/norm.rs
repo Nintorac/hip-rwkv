@@ -3,17 +3,11 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::validation::{require_contiguous_4, require_contiguous_pair};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
-    check,
-    launch_group_norm_f16,
-    launch_group_norm_f32,
-    launch_l2_norm_f16,
-    launch_l2_norm_f32,
-    launch_layer_norm_f16,
-    launch_layer_norm_f32,
-    HipErrorKind,
-    Result,
+    check, launch_group_norm_f16, launch_group_norm_f32, launch_l2_norm_f16, launch_l2_norm_f32,
+    launch_layer_norm_f16, launch_layer_norm_f32, HipErrorKind, Result,
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
@@ -69,12 +63,7 @@ pub fn layer_norm_f32(
             ),
         });
     }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "layer_norm_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_pair(input, output, "layer_norm_f32")?;
 
     unsafe {
         check(launch_layer_norm_f32(
@@ -107,16 +96,7 @@ pub fn layer_norm_f16(
             message: "layer_norm_f16 shape mismatch".to_string(),
         });
     }
-    if !input.is_contiguous()
-        || !output.is_contiguous()
-        || !weight.is_contiguous()
-        || !bias.is_contiguous()
-    {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "layer_norm_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_4(input, output, weight, bias, "layer_norm_f16")?;
     unsafe {
         check(launch_layer_norm_f16(
             input.as_ptr(),
@@ -239,12 +219,7 @@ pub fn group_norm_f32(
             ),
         });
     }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "group_norm_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_pair(input, output, "group_norm_f32")?;
 
     unsafe {
         check(launch_group_norm_f32(
@@ -295,12 +270,7 @@ pub fn group_norm_f16(
             ),
         });
     }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "group_norm_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_pair(input, output, "group_norm_f16")?;
 
     unsafe {
         check(launch_group_norm_f16(
@@ -411,12 +381,7 @@ pub fn l2_norm_f32(
             ),
         });
     }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "l2_norm_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_pair(input, output, "l2_norm_f32")?;
 
     unsafe {
         check(launch_l2_norm_f32(
@@ -463,12 +428,7 @@ pub fn l2_norm_f16(
             ),
         });
     }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "l2_norm_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_pair(input, output, "l2_norm_f16")?;
 
     unsafe {
         check(launch_l2_norm_f16(

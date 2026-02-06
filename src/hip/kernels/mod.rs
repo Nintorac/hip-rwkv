@@ -5,6 +5,7 @@ pub mod fla;
 mod norm;
 mod rwkv_ops;
 mod softmax;
+pub mod validation;
 mod wkv;
 
 pub use elementwise::*;

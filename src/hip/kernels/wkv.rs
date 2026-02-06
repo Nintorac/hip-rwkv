@@ -3,14 +3,9 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::validation::{require_all_contiguous, require_contiguous_5};
 use crate::hip::device::Stream;
-use crate::hip::ffi::{
-    check,
-    launch_wkv_bonus_f16,
-    launch_wkv_bonus_f32,
-    HipErrorKind,
-    Result,
-};
+use crate::hip::ffi::{check, launch_wkv_bonus_f16, launch_wkv_bonus_f32, HipErrorKind, Result};
 use crate::hip::tensor::{TensorHip, TensorShape};
 
 /// Launch the WKV bonus kernel (time_first).
@@ -72,17 +67,7 @@ pub fn wkv_bonus_f32(
             ),
         });
     }
-    if !r.is_contiguous()
-        || !k.is_contiguous()
-        || !v.is_contiguous()
-        || !r_k.is_contiguous()
-        || !output.is_contiguous()
-    {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "wkv_bonus_f32 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_5(r, k, v, r_k, output, "wkv_bonus_f32")?;
 
     unsafe {
         check(launch_wkv_bonus_f32(
@@ -113,17 +98,7 @@ pub fn wkv_bonus_f16(
     let t = r.shape()[2];
     let b = r.shape()[3];
 
-    if !r.is_contiguous()
-        || !k.is_contiguous()
-        || !v.is_contiguous()
-        || !r_k.is_contiguous()
-        || !output.is_contiguous()
-    {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "wkv_bonus_f16 requires contiguous tensors".to_string(),
-        });
-    }
+    require_contiguous_5(r, k, v, r_k, output, "wkv_bonus_f16")?;
 
     unsafe {
         check(launch_wkv_bonus_f16(
@@ -379,21 +354,20 @@ pub fn wkv7_fused_t1(
         });
     }
 
-    if !w_decay.is_contiguous()
-        || !q.is_contiguous()
-        || !k.is_contiguous()
-        || !v.is_contiguous()
-        || !a.is_contiguous()
-        || !b.is_contiguous()
-        || !state.is_contiguous()
-        || !output.is_contiguous()
-        || !lengths.is_contiguous()
-    {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "wkv7_fused_t1 requires contiguous tensors".to_string(),
-        });
-    }
+    require_all_contiguous(
+        &[
+            w_decay.is_contiguous(),
+            q.is_contiguous(),
+            k.is_contiguous(),
+            v.is_contiguous(),
+            a.is_contiguous(),
+            b.is_contiguous(),
+            state.is_contiguous(),
+            output.is_contiguous(),
+            lengths.is_contiguous(),
+        ],
+        "wkv7_fused_t1",
+    )?;
 
     unsafe {
         check(launch_wkv7_fused_t1(
