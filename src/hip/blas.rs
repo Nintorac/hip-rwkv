@@ -181,6 +181,53 @@ impl Drop for HipBlasContext {
 }
 
 // ============================================================================
+// GEMM Dimension Validation
+// ============================================================================
+
+/// Extract and validate GEMM dimensions from weight and input tensors.
+///
+/// For a GEMM operation: output = weight @ input where:
+/// - weight is [M, K, 1, 1] (M output features, K input features)
+/// - input is [K, T, B, 1] (K input features, T*B total columns)
+///
+/// This function extracts M, K, N and verifies that input's first dimension matches
+/// weight's second dimension (K).
+///
+/// # Arguments
+/// * `weight` - Weight tensor [M, K, ...] where M is output features
+/// * `input` - Input tensor [K, ...] where remaining dimensions are flattened to N
+/// * `op_name` - Operation name for error messages (e.g., "HGEMM", "SGEMM")
+///
+/// # Returns
+/// * `Ok((m, k, n))` - GEMM dimensions as c_int
+/// * `Err` - If input's first dimension doesn't match weight's second dimension
+pub fn validate_gemm_dims<T: Copy, U: Copy>(
+    weight: &TensorHip<T>,
+    input: &TensorHip<U>,
+    op_name: &str,
+) -> Result<(c_int, c_int, c_int)> {
+    let weight_shape = weight.shape();
+    let input_shape = input.shape();
+
+    let m = weight_shape[0] as c_int;
+    let k = weight_shape[1] as c_int;
+    // Compute n as product of all dimensions except the first (handles batching)
+    let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
+
+    if input_shape[0] as c_int != k {
+        return Err(HipErrorKind {
+            code: -1,
+            message: format!(
+                "{} dimension mismatch: weight has K={}, input has K={}",
+                op_name, k, input_shape[0]
+            ),
+        });
+    }
+
+    Ok((m, k, n))
+}
+
+// ============================================================================
 // rocBLAS GEMV/GEMM Functions
 // ============================================================================
 
@@ -262,27 +309,7 @@ pub unsafe fn hgemm_f16(
     // In rocBLAS column-major terms:
     //   C[M,N] = A[M,K] * B[K,N] where M=N_out, N=A_tokens, K=K_in
 
-    let weight_shape = weight.shape();
-    let input_shape = input.shape();
-
-    // weight: [N, K, 1, 1] where N is out_features, K is in_features
-    // input: [K, T, B, 1] where K is in_features, T*B is total columns
-    // For batched inputs, we flatten all non-first dimensions into columns
-    let m = weight_shape[0] as c_int; // N (output features) - rows of weight
-    let k = weight_shape[1] as c_int; // K (input features) - cols of weight, rows of input
-                                      // Compute n as product of all dimensions except the first (handles batching)
-    let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
-
-    // Verify dimensions
-    if input_shape[0] as c_int != k {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "HGEMM dimension mismatch: weight has K={}, input has K={}",
-                k, input_shape[0]
-            ),
-        });
-    }
+    let (m, k, n) = validate_gemm_dims(weight, input, "HGEMM")?;
 
     let status = launch_hgemm(
         handle,
@@ -328,26 +355,7 @@ pub unsafe fn hgemm_f16_to_f32(
     input: &TensorHip<f16>,
     output: &mut TensorHip<f32>,
 ) -> Result<()> {
-    let weight_shape = weight.shape();
-    let input_shape = input.shape();
-
-    // weight: [M, K, 1, 1] where M is out_features (vocab_size), K is in_features (n_embd)
-    // input: [K, T, B, 1] where K is in_features, T*B is total columns
-    let m = weight_shape[0] as c_int; // M (output features / vocab_size)
-    let k = weight_shape[1] as c_int; // K (input features / n_embd)
-                                      // Compute n as product of all dimensions except the first (handles batching)
-    let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
-
-    // Verify dimensions
-    if input_shape[0] as c_int != k {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "HGEMM_F32_OUT dimension mismatch: weight has K={}, input has K={}",
-                k, input_shape[0]
-            ),
-        });
-    }
+    let (m, k, n) = validate_gemm_dims(weight, input, "HGEMM_F32_OUT")?;
 
     let status = launch_hgemm_f32_out(
         handle,
@@ -397,27 +405,7 @@ pub unsafe fn sgemm_f32(
     // In rocBLAS column-major terms:
     //   C[M,N] = A[M,K] * B[K,N] where M=N_out, N=A_tokens, K=K_in
 
-    let weight_shape = weight.shape();
-    let input_shape = input.shape();
-
-    // weight: [N, K, 1, 1] where N is out_features, K is in_features
-    // input: [K, T, B, 1] where K is in_features, T*B is total columns
-    // For batched inputs, we flatten all non-first dimensions into columns
-    let m = weight_shape[0] as c_int; // N (output features) - rows of weight
-    let k = weight_shape[1] as c_int; // K (input features) - cols of weight, rows of input
-                                      // Compute n as product of all dimensions except the first (handles batching)
-    let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
-
-    // Verify dimensions
-    if input_shape[0] as c_int != k {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "SGEMM dimension mismatch: weight has K={}, input has K={}",
-                k, input_shape[0]
-            ),
-        });
-    }
+    let (m, k, n) = validate_gemm_dims(weight, input, "SGEMM")?;
 
     let status = launch_sgemm(
         handle,

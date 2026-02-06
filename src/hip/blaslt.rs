@@ -9,8 +9,7 @@
 //! hipBLASLt may provide better performance than rocBLAS for certain GEMM shapes,
 //! especially for mixed precision operations.
 
-use std::ffi::c_int;
-
+use super::blas::validate_gemm_dims;
 use super::buffer::DeviceBuffer;
 use super::device::Stream;
 use super::ffi::{
@@ -145,25 +144,7 @@ impl HipBlasLtContext {
         input: &TensorHip<f16>,
         output: &mut TensorHip<f32>,
     ) -> Result<()> {
-        let weight_shape = weight.shape();
-        let input_shape = input.shape();
-
-        // weight: [M, K, 1, 1] where M is out_features (vocab_size), K is in_features (n_embd)
-        // input: [K, T, B, 1] where K is in_features, T*B is total columns
-        let m = weight_shape[0] as c_int;
-        let k = weight_shape[1] as c_int;
-        let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
-
-        // Verify dimensions
-        if input_shape[0] as c_int != k {
-            return Err(HipErrorKind {
-                code: -1,
-                message: format!(
-                    "hipBLASLt HGEMM_F32_OUT dimension mismatch: weight has K={}, input has K={}",
-                    k, input_shape[0]
-                ),
-            });
-        }
+        let (m, k, n) = validate_gemm_dims(weight, input, "hipBLASLt HGEMM_F32_OUT")?;
 
         let (workspace_ptr, workspace_size) = self.workspace_ptr_and_size();
 
@@ -201,22 +182,7 @@ impl HipBlasLtContext {
         input: &TensorHip<f16>,
         output: &mut TensorHip<f16>,
     ) -> Result<()> {
-        let weight_shape = weight.shape();
-        let input_shape = input.shape();
-
-        let m = weight_shape[0] as c_int;
-        let k = weight_shape[1] as c_int;
-        let n = (input_shape[1] * input_shape[2] * input_shape[3]) as c_int;
-
-        if input_shape[0] as c_int != k {
-            return Err(HipErrorKind {
-                code: -1,
-                message: format!(
-                    "hipBLASLt HGEMM dimension mismatch: weight has K={}, input has K={}",
-                    k, input_shape[0]
-                ),
-            });
-        }
+        let (m, k, n) = validate_gemm_dims(weight, input, "hipBLASLt HGEMM")?;
 
         let (workspace_ptr, workspace_size) = self.workspace_ptr_and_size();
 
