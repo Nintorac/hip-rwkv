@@ -584,45 +584,6 @@ pub fn hip_control_k(
     d_output.to_vec(&stream)
 }
 
-/// Extract shift states at the correct positions based on per-batch lengths.
-///
-/// For each batch element b, extracts x[:, length[b]-1, b] instead of x[:, T-1, b].
-/// This is used to correctly handle padded sequences where we want the state
-/// at the last valid position, not the last padded position.
-///
-/// # Arguments
-/// * `x` - Input tensor [C, T, B] flattened
-/// * `lengths` - Real sequence length per batch [B]
-/// * `c` - Embedding dimension
-/// * `t` - Padded sequence length
-/// * `b` - Batch size
-///
-/// # Returns
-/// State tensor [C, B] containing x[:, length[i]-1, i] for each batch i
-pub(crate) fn extract_shift_state_at_lengths(
-    x: &[f32],
-    lengths: &[usize],
-    c: usize,
-    t: usize,
-    b: usize,
-) -> Vec<f32> {
-    let mut state_out = vec![0.0f32; c * b];
-    for batch_idx in 0..b {
-        // Skip empty sequences - keep state as zeros
-        if lengths[batch_idx] == 0 {
-            continue;
-        }
-        let time_idx = lengths[batch_idx] - 1; // Last valid position
-        for channel in 0..c {
-            // x layout: [C, T, B] = x[batch_idx * T * C + time_idx * C + channel]
-            let x_idx = batch_idx * t * c + time_idx * c + channel;
-            let state_idx = batch_idx * c + channel;
-            state_out[state_idx] = x[x_idx];
-        }
-    }
-    state_out
-}
-
 // ============================================================================
 // WKV7 rocBLAS GEMV Implementation
 // ============================================================================

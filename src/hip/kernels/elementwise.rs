@@ -17,7 +17,6 @@ use crate::hip::ffi::{
     launch_copy_f32,
     launch_decay_exp_f16,
     launch_decay_exp_f32,
-    launch_exp_f16,
     launch_exp_f32,
     launch_lerp_f16,
     launch_lerp_f32,
@@ -972,33 +971,6 @@ pub fn negate_f16(
     }
     unsafe {
         check(launch_negate_f16(
-            input.as_ptr(),
-            output.as_mut_ptr(),
-            input.len() as c_int,
-            stream.handle(),
-        ))
-    }
-}
-
-pub fn exp_f16(input: &TensorHip<f16>, output: &mut TensorHip<f16>, stream: &Stream) -> Result<()> {
-    if input.len() != output.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Size mismatch: input={}, output={}",
-                input.len(),
-                output.len()
-            ),
-        });
-    }
-    if !input.is_contiguous() || !output.is_contiguous() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: "exp_f16 requires contiguous tensors".to_string(),
-        });
-    }
-    unsafe {
-        check(launch_exp_f16(
             input.as_ptr(),
             output.as_mut_ptr(),
             input.len() as c_int,

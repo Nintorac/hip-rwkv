@@ -12,7 +12,7 @@ pub mod weights;
 pub use decode::HipDecode;
 pub use fla::ChunkWkv;
 pub use hip_prefill::HipPrefill;
-pub use prefill::{RecurrentWkv, WaveReduceWkv, WkvInput, WkvKernel};
+pub use prefill::{RecurrentWkv, WkvInput, WkvKernel};
 pub use state::{HipState, StateLayout};
 pub use weights::{
     AttentionHip, EmbedHip, FfnHip, HeadHip, LayerHip, LayerNormHip,

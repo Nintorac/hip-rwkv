@@ -1,18 +1,17 @@
 //! WKV kernel abstraction for swappable prefill/decode implementations.
 //!
 //! This module defines the [`WkvKernel`] trait, which allows the T>1 prefill
-//! kernel to be swapped for alternative implementations (e.g., a future FLA
-//! module) without changing the inference loop in `step_inner()`.
+//! kernel to be swapped for alternative implementations (e.g., FLA chunked
+//! prefill) without changing the inference loop in `step_inner()`.
 //!
-//! Two built-in implementations are provided:
+//! Built-in implementation:
 //! - [`RecurrentWkv`] -- optimized for T=1 decode (in-place state update)
-//! - [`WaveReduceWkv`] -- wave-cooperative reduction for T>1 prefill
 
 use half::f16;
 
 use crate::hip::device::Stream;
 use crate::hip::ffi::Result;
-use crate::hip::kernels::{wkv7_fused_t1, wkv7_wave_reduce};
+use crate::hip::kernels::wkv7_fused_t1;
 use crate::hip::tensor::TensorHip;
 
 /// Inputs to a WKV kernel invocation.
@@ -66,53 +65,11 @@ pub trait WkvKernel: Send + Sync {
         stream: &Stream,
     ) -> Result<()>;
 
-    /// Whether this kernel supports multi-token (T>1) sequences.
-    fn supports_multi_token(&self) -> bool;
-
-    /// Human-readable name for logging / profiling.
-    fn name(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
 // Built-in implementations
 // ---------------------------------------------------------------------------
-
-/// Wave-cooperative WKV7 kernel for T>=1 prefill.
-///
-/// Uses wave-shuffle reduction with in-place state update. The HIP kernel
-/// loads state into LDS before writing, so aliasing is safe.
-pub struct WaveReduceWkv;
-
-impl WkvKernel for WaveReduceWkv {
-    fn compute(
-        &self,
-        input: &WkvInput<'_>,
-        state: &mut TensorHip<f32>,
-        output: &mut TensorHip<f16>,
-        stream: &Stream,
-    ) -> Result<()> {
-        wkv7_wave_reduce(
-            input.w_decay,
-            input.r,
-            input.k,
-            input.v,
-            input.a,
-            input.b,
-            state,
-            output,
-            input.lengths,
-            stream,
-        )
-    }
-
-    fn supports_multi_token(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &str {
-        "wave_reduce"
-    }
-}
 
 /// Recurrent WKV7 kernel optimized for T=1 decode.
 ///
@@ -139,13 +96,5 @@ impl WkvKernel for RecurrentWkv {
             input.lengths,
             stream,
         )
-    }
-
-    fn supports_multi_token(&self) -> bool {
-        false
-    }
-
-    fn name(&self) -> &str {
-        "fused_t1"
     }
 }

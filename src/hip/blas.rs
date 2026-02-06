@@ -13,7 +13,7 @@ use std::ffi::c_int;
 
 use super::device::Stream;
 use super::ffi::{
-    launch_hgemm, launch_hgemm_f32_out, launch_sgemm, launch_sgemm_ta, rocblas_handle_create,
+    launch_hgemm, launch_hgemm_f32_out, launch_sgemm, rocblas_handle_create,
     rocblas_handle_destroy, rocblas_set_stream_wrapper, rocblas_to_hip_error, HipErrorKind, Result,
     RocblasHandle, ROCBLAS_STATUS_SUCCESS,
 };
@@ -495,99 +495,6 @@ pub fn hip_sgemm(
     rocblas_destroy(handle)?;
 
     // Copy back result
-    d_output.to_vec(&stream)
-}
-
-/// High-level SGEMM with transposed A (for row-major weights - DEPRECATED).
-///
-/// NOTE: This function is deprecated. Use `hip_sgemm` with column-major weights
-/// loaded via `load_weight_matrix_f32` instead. Per docs/RWKV7_HIP_BACKEND_PLAN.md:
-/// "Use rocBLAS-native column-major storage for GEMM/GEMV...
-///  This avoids per-call row/col mapping in rocBLAS"
-///
-/// Performs: output = weight^T @ input (FP32 matrix multiply)
-///
-/// # Arguments
-/// * `weight` - Weight matrix stored as row-major [M, K] (flattened)
-/// * `input` - Input matrix [K, N] where K is input features, N is tokens (flattened)
-/// * `m` - Number of output features
-/// * `k` - Number of input features
-/// * `n` - Number of tokens
-///
-/// # Returns
-/// * Output vector [M, N] (flattened)
-#[deprecated(note = "Use hip_sgemm with column-major weights instead")]
-pub fn hip_sgemm_ta(
-    weight: &[f32],
-    input: &[f32],
-    m: usize, // output features
-    k: usize, // input features
-    n: usize, // tokens
-) -> Result<Vec<f32>> {
-    if weight.len() != m * k {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Weight size mismatch: expected {}×{}={}, got {}",
-                m,
-                k,
-                m * k,
-                weight.len()
-            ),
-        });
-    }
-    if input.len() != k * n {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!(
-                "Input size mismatch: expected {}×{}={}, got {}",
-                k,
-                n,
-                k * n,
-                input.len()
-            ),
-        });
-    }
-
-    let stream = Stream::new()?;
-
-    // For transposed A:
-    // weight is stored as row-major [M, K] = column-major [K, M]
-    // We tell rocBLAS to use shape [K, M] and transpose to get [M, K]
-    let weight_shape = TensorShape::new(k, m, 1, 1); // stored shape
-    let input_shape = TensorShape::new(k, n, 1, 1);
-    let output_shape = TensorShape::new(m, n, 1, 1);
-
-    let d_weight = TensorHip::from_slice(weight, weight_shape, &stream)?;
-    let d_input = TensorHip::from_slice(input, input_shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(output_shape)?;
-
-    let handle = rocblas_create()?;
-    rocblas_set_stream(handle, &stream)?;
-
-    let status = unsafe {
-        launch_sgemm_ta(
-            handle,
-            m as c_int,
-            n as c_int,
-            k as c_int,
-            1.0, // alpha
-            d_weight.as_ptr(),
-            d_input.as_ptr(),
-            0.0, // beta
-            d_output.as_mut_ptr(),
-        )
-    };
-
-    rocblas_destroy(handle)?;
-
-    if status != ROCBLAS_STATUS_SUCCESS {
-        return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
-            message: format!("rocBLAS SGEMM_TA failed: status {}", status),
-        });
-    }
-
     d_output.to_vec(&stream)
 }
 

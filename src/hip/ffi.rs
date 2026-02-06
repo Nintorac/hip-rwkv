@@ -459,12 +459,6 @@ extern "C" {
         n: c_int,
         stream: HipStream,
     ) -> HipError;
-    pub fn launch_exp_f16(
-        input: *const f16,
-        output: *mut f16,
-        n: c_int,
-        stream: HipStream,
-    ) -> HipError;
     pub fn launch_broadcast_add_f32(
         input: *const f32,
         bias: *const f32,
@@ -540,17 +534,6 @@ extern "C" {
         beta: f32,
         c: *mut f32, // M×N matrix
     ) -> RocblasStatus;
-    pub fn launch_sgemm_ta(
-        handle: RocblasHandle,
-        m: c_int, // rows of output C (output features)
-        n: c_int, // cols of B and C (tokens)
-        k: c_int, // input features
-        alpha: f32,
-        a: *const f32, // stored as K×M (row-major [M, K])
-        b: *const f32, // K×N matrix
-        beta: f32,
-        c: *mut f32, // M×N matrix
-    ) -> RocblasStatus;
     pub fn launch_hgemm_f32_out(
         handle: RocblasHandle,
         m: c_int,      // rows of A and C (vocab size / output features)
@@ -562,32 +545,6 @@ extern "C" {
     ) -> RocblasStatus;
     pub fn rocblas_to_hip_error(status: RocblasStatus) -> HipError;
 
-    // rocBLAS batched GEMV for WKV7
-    pub fn launch_sgemv_strided_batched(
-        handle: RocblasHandle,
-        m: c_int,           // rows of each A matrix
-        n: c_int,           // cols of each A matrix
-        a: *const f32,      // batched M×N matrices
-        stride_a: i64,      // stride between matrices
-        x: *const f32,      // batched length-N vectors
-        stride_x: i64,      // stride between x vectors
-        y: *mut f32,        // batched length-M output vectors
-        stride_y: i64,      // stride between y vectors
-        batch_count: c_int, // number of batches
-    ) -> RocblasStatus;
-
-    // WKV7 state update kernel
-    pub fn launch_wkv7_state_update_flat(
-        state: *mut f32,    // [N, N, batch_count] state matrices
-        w: *const f32,      // [N, batch_count] decay values
-        sa: *const f32,     // [N, batch_count] state @ a result
-        b: *const f32,      // [N, batch_count] b vectors
-        v: *const f32,      // [N, batch_count] v vectors
-        k: *const f32,      // [N, batch_count] k vectors
-        n: c_int,           // head size (64)
-        batch_count: c_int, // total batches
-        stream: HipStream,
-    ) -> HipError;
 
     // Full WKV7 GEMV implementation
     pub fn launch_wkv7_gemv(
@@ -780,13 +737,6 @@ pub const HIP_SUCCESS: HipError = 0;
 pub const HIP_HOST_MALLOC_DEFAULT: c_uint = 0;
 pub const HIP_HOST_MALLOC_PORTABLE: c_uint = 1;
 pub const HIP_HOST_MALLOC_MAPPED: c_uint = 2;
-pub const HIP_HOST_MALLOC_WRITE_COMBINED: c_uint = 4;
-
-/// hipEventCreate flags (default is blocking sync)
-pub const HIP_EVENT_DEFAULT: c_uint = 0;
-
-/// hipStreamWaitEvent flags
-pub const HIP_STREAM_WAIT_VALUE_EQ: c_uint = 0;
 
 /// hipErrorNotReady - returned by hipEventQuery when event is not complete
 pub const HIP_ERROR_NOT_READY: HipError = 600;

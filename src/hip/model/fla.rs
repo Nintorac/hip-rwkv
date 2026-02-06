@@ -30,9 +30,9 @@ use crate::hip::scratch::PrefillScratch;
 use crate::hip::tensor::{TensorHip, TensorShape};
 
 /// Threshold sequence length for dispatching to FLA chunked prefill.
-/// Sequences with T >= this value use FLA; shorter sequences use WaveReduceWkv.
+/// Sequences with T >= this value use FLA; shorter sequences use RecurrentWkv.
 /// FLA handles all prefill (T>1), so the threshold is set to 2.
-pub const FLA_CHUNK_THRESHOLD: usize = 2;
+pub(crate) const FLA_CHUNK_THRESHOLD: usize = 2;
 
 /// Chunked WKV7 kernel for efficient prefill (FLA algorithm).
 ///
