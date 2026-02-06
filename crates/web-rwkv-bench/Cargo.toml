@@ -5,7 +5,6 @@ authors.workspace = true
 edition.workspace = true
 description = "Benchmarking utilities for web-rwkv"
 license.workspace = true
-repository.workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
