@@ -3,6 +3,7 @@
 use half::f16;
 use std::ffi::c_int;
 
+use super::host_helpers::{hip_ternary_op, hip_unary_op};
 use super::validation::{
     validate_binary_op, validate_broadcast_op, validate_ternary_op, validate_unary_op,
 };
@@ -222,19 +223,14 @@ dual_precision_unary!(copy_tensor_f32, copy_tensor_f16, launch_copy_f32, launch_
 /// Copy f32 data from host, through GPU copy kernel, back to host.
 /// This is a convenience function for testing.
 pub fn hip_copy_kernel(input: &[f32]) -> Result<Vec<f32>> {
-    // Use the null stream as a workaround for hipStreamCreate crashes
     let stream = Stream::null();
-
     let mut d_input = DeviceBuffer::<f32>::new(input.len())?;
     let mut d_output = DeviceBuffer::<f32>::new(input.len())?;
-
     d_input.copy_from_host(input, &stream)?;
     copy_f32(&d_input, &mut d_output, &stream)?;
-
     let mut output = vec![0.0f32; input.len()];
     d_output.copy_to_host(&mut output, &stream)?;
     stream.synchronize()?;
-
     Ok(output)
 }
 
@@ -242,116 +238,42 @@ pub fn hip_copy_kernel(input: &[f32]) -> Result<Vec<f32>> {
 // Time decay transformation used in RWKV7. Numerically stable for all finite inputs.
 dual_precision_unary!(decay_exp_f32, decay_exp_f16, launch_decay_exp_f32, launch_decay_exp_f16);
 
-/// Compute decay exponential on host data, returning results.
-/// This is a convenience function for testing.
-pub fn hip_decay_exp(input: &[f32]) -> Result<Vec<f32>> {
-    let stream = Stream::null();
-    let shape = TensorShape::new(input.len(), 1, 1, 1);
-
-    let d_input = TensorHip::from_slice(input, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    decay_exp_f32(&d_input, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_decay_exp(input) -> Vec<f32>
+hip_unary_op!(hip_decay_exp, decay_exp_f32);
 
 // Lerp: out = a + t * (b - a) (linear interpolation)
 // Used for mixing operations in RWKV7. All tensors must have the same length and be contiguous.
 dual_precision_ternary!(lerp_f32, lerp_f16, launch_lerp_f32, launch_lerp_f16);
 
-/// Compute linear interpolation on host data, returning results.
-/// This is a convenience function for testing.
-pub fn hip_lerp(a: &[f32], b: &[f32], t: &[f32]) -> Result<Vec<f32>> {
-    if a.len() != b.len() || a.len() != t.len() {
-        return Err(HipErrorKind {
-            code: -1,
-            message: format!("Size mismatch: a={}, b={}, t={}", a.len(), b.len(), t.len()),
-        });
-    }
-
-    let stream = Stream::null();
-    let shape = TensorShape::new(a.len(), 1, 1, 1);
-
-    let d_a = TensorHip::from_slice(a, shape, &stream)?;
-    let d_b = TensorHip::from_slice(b, shape, &stream)?;
-    let d_t = TensorHip::from_slice(t, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    lerp_f32(&d_a, &d_b, &d_t, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_lerp(a, b, t) -> Vec<f32>
+hip_ternary_op!(hip_lerp, lerp_f32);
 
 // Sigmoid: out = 1 / (1 + exp(-x))
 // Standard sigmoid activation function.
 dual_precision_unary!(sigmoid_f32, sigmoid_f16, launch_sigmoid_f32, launch_sigmoid_f16);
 
-/// Compute sigmoid on host data, returning results.
-/// This is a convenience function for testing.
-pub fn hip_sigmoid(input: &[f32]) -> Result<Vec<f32>> {
-    let stream = Stream::null();
-    let shape = TensorShape::new(input.len(), 1, 1, 1);
-
-    let d_input = TensorHip::from_slice(input, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    sigmoid_f32(&d_input, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_sigmoid(input) -> Vec<f32>
+hip_unary_op!(hip_sigmoid, sigmoid_f32);
 
 // Squared ReLU: out = max(0, x)^2
 // Used in RWKV7 channel mixing.
 dual_precision_unary!(squared_relu_f32, squared_relu_f16, launch_squared_relu_f32, launch_squared_relu_f16);
 
-/// Compute squared ReLU on host data, returning results.
-/// This is a convenience function for testing.
-pub fn hip_squared_relu(input: &[f32]) -> Result<Vec<f32>> {
-    let stream = Stream::null();
-    let shape = TensorShape::new(input.len(), 1, 1, 1);
-
-    let d_input = TensorHip::from_slice(input, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    squared_relu_f32(&d_input, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_squared_relu(input) -> Vec<f32>
+hip_unary_op!(hip_squared_relu, squared_relu_f32);
 
 // Softplus decay: out = log(sigmoid(x)) - 0.5
 // Used for RWKV7 time decay computation. Numerically stable for all finite inputs.
 dual_precision_unary!(softplus_decay_f32, softplus_decay_f16, launch_softplus_decay_f32, launch_softplus_decay_f16);
 
-/// Compute softplus decay on host data, returning results.
-/// This is a convenience function for testing.
-pub fn hip_softplus_decay(input: &[f32]) -> Result<Vec<f32>> {
-    let stream = Stream::null();
-    let shape = TensorShape::new(input.len(), 1, 1, 1);
-
-    let d_input = TensorHip::from_slice(input, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    softplus_decay_f32(&d_input, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_softplus_decay(input) -> Vec<f32>
+hip_unary_op!(hip_softplus_decay, softplus_decay_f32);
 
 // Tanh: out = tanh(x)
 dual_precision_unary!(tanh_f32, tanh_f16, launch_tanh_f32, launch_tanh_f16);
 
-/// Compute tanh on host data.
-pub fn hip_tanh(input: &[f32]) -> Result<Vec<f32>> {
-    let stream = Stream::null();
-    let shape = TensorShape::new(input.len(), 1, 1, 1);
-
-    let d_input = TensorHip::from_slice(input, shape, &stream)?;
-    let mut d_output = TensorHip::<f32>::new(shape)?;
-
-    tanh_f32(&d_input, &mut d_output, &stream)?;
-
-    d_output.to_vec(&stream)
-}
+// Host convenience: hip_tanh(input) -> Vec<f32>
+hip_unary_op!(hip_tanh, tanh_f32);
 
 // ============================================================================
 // Elementwise operations for GPU-native forward pass

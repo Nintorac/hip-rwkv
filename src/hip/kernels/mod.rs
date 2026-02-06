@@ -2,6 +2,8 @@
 
 mod elementwise;
 pub mod fla;
+#[macro_use]
+mod host_helpers;
 mod norm;
 mod rwkv_ops;
 mod softmax;
