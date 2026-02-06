@@ -248,8 +248,9 @@ impl HipBlasLtContext {
 
 impl Drop for HipBlasLtContext {
     fn drop(&mut self) {
-        // Best-effort cleanup - ignore errors in drop
-        let _ = hipblaslt_destroy(self.handle);
+        // SAFETY: self.handle was created via hipblaslt_create in new()/with_null_stream()/with_workspace_size()
+        // and is being destroyed exactly once here in Drop.
+        let _ = unsafe { hipblaslt_destroy(self.handle) };
         // Stream and workspace are dropped automatically
     }
 }
@@ -272,11 +273,15 @@ pub fn hipblaslt_create() -> Result<HipblasLtHandle> {
 }
 
 /// Destroy a hipBLASLt handle.
-pub fn hipblaslt_destroy(handle: HipblasLtHandle) -> Result<()> {
-    let status = unsafe { hipblaslt_handle_destroy(handle) };
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid hipBLASLt handle
+/// that was created by `hipblaslt_create` and has not already been destroyed.
+pub unsafe fn hipblaslt_destroy(handle: HipblasLtHandle) -> Result<()> {
+    let status = hipblaslt_handle_destroy(handle);
     if status != HIPBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { hipblaslt_to_hip_error(status) },
+            code: hipblaslt_to_hip_error(status),
             message: format!("Failed to destroy hipBLASLt handle: status {}", status),
         });
     }

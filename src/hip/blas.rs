@@ -71,7 +71,8 @@ impl HipBlasContext {
     pub fn new() -> Result<Self> {
         let stream = Stream::new()?;
         let handle = rocblas_create()?;
-        rocblas_set_stream(handle, &stream)?;
+        // SAFETY: handle was just created by rocblas_create, so it is valid.
+        unsafe { rocblas_set_stream(handle, &stream)? };
         Ok(Self { handle, stream })
     }
 
@@ -82,7 +83,8 @@ impl HipBlasContext {
     pub fn with_null_stream() -> Result<Self> {
         let stream = Stream::null();
         let handle = rocblas_create()?;
-        rocblas_set_stream(handle, &stream)?;
+        // SAFETY: handle was just created by rocblas_create, so it is valid.
+        unsafe { rocblas_set_stream(handle, &stream)? };
         Ok(Self { handle, stream })
     }
 
@@ -113,7 +115,8 @@ impl HipBlasContext {
         input: &TensorHip<f32>,
         output: &mut TensorHip<f32>,
     ) -> Result<()> {
-        sgemm_f32(self.handle, weight, input, output)
+        // SAFETY: self.handle was created via rocblas_create and is valid for the lifetime of self.
+        unsafe { sgemm_f32(self.handle, weight, input, output) }
     }
 
     /// Device-to-device HGEMM: output = weight @ input (FP16)
@@ -125,7 +128,8 @@ impl HipBlasContext {
         input: &TensorHip<f16>,
         output: &mut TensorHip<f16>,
     ) -> Result<()> {
-        hgemm_f16(self.handle, weight, input, output)
+        // SAFETY: self.handle was created via rocblas_create and is valid for the lifetime of self.
+        unsafe { hgemm_f16(self.handle, weight, input, output) }
     }
 
     /// Mixed-precision HGEMM: output = weight @ input with f16 inputs and f32 output.
@@ -138,7 +142,8 @@ impl HipBlasContext {
         input: &TensorHip<f16>,
         output: &mut TensorHip<f32>,
     ) -> Result<()> {
-        hgemm_f16_to_f32(self.handle, weight, input, output)
+        // SAFETY: self.handle was created via rocblas_create and is valid for the lifetime of self.
+        unsafe { hgemm_f16_to_f32(self.handle, weight, input, output) }
     }
 
     /// Copy host data to a GPU tensor using this context's stream.
@@ -168,8 +173,9 @@ impl HipBlasContext {
 
 impl Drop for HipBlasContext {
     fn drop(&mut self) {
-        // Best-effort cleanup - ignore errors in drop
-        let _ = rocblas_destroy(self.handle);
+        // SAFETY: self.handle was created via rocblas_create in new()/with_null_stream()
+        // and is being destroyed exactly once here in Drop.
+        let _ = unsafe { rocblas_destroy(self.handle) };
         // Stream is dropped automatically
     }
 }
@@ -192,11 +198,15 @@ pub fn rocblas_create() -> Result<RocblasHandle> {
 }
 
 /// Destroy a rocBLAS handle.
-pub fn rocblas_destroy(handle: RocblasHandle) -> Result<()> {
-    let status = unsafe { rocblas_handle_destroy(handle) };
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not already been destroyed.
+pub unsafe fn rocblas_destroy(handle: RocblasHandle) -> Result<()> {
+    let status = rocblas_handle_destroy(handle);
     if status != ROCBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
+            code: rocblas_to_hip_error(status),
             message: format!("Failed to destroy rocBLAS handle: status {}", status),
         });
     }
@@ -204,11 +214,15 @@ pub fn rocblas_destroy(handle: RocblasHandle) -> Result<()> {
 }
 
 /// Set the stream for a rocBLAS handle.
-pub fn rocblas_set_stream(handle: RocblasHandle, stream: &Stream) -> Result<()> {
-    let status = unsafe { rocblas_set_stream_wrapper(handle, stream.handle()) };
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not been destroyed.
+pub unsafe fn rocblas_set_stream(handle: RocblasHandle, stream: &Stream) -> Result<()> {
+    let status = rocblas_set_stream_wrapper(handle, stream.handle());
     if status != ROCBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
+            code: rocblas_to_hip_error(status),
             message: format!("Failed to set rocBLAS stream: status {}", status),
         });
     }
@@ -228,7 +242,11 @@ pub fn rocblas_set_stream(handle: RocblasHandle, stream: &Stream) -> Result<()> 
 /// - output is N×A (out_features × tokens)
 ///
 /// The operation is: output = weight @ input
-pub fn hgemm_f16(
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not been destroyed.
+pub unsafe fn hgemm_f16(
     handle: RocblasHandle,
     weight: &TensorHip<f16>,
     input: &TensorHip<f16>,
@@ -266,21 +284,19 @@ pub fn hgemm_f16(
         });
     }
 
-    let status = unsafe {
-        launch_hgemm(
-            handle,
-            m,
-            n,
-            k,
-            weight.as_ptr() as *const u16,
-            input.as_ptr() as *const u16,
-            output.as_mut_ptr() as *mut u16,
-        )
-    };
+    let status = launch_hgemm(
+        handle,
+        m,
+        n,
+        k,
+        weight.as_ptr() as *const u16,
+        input.as_ptr() as *const u16,
+        output.as_mut_ptr() as *mut u16,
+    );
 
     if status != ROCBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
+            code: rocblas_to_hip_error(status),
             message: format!("rocBLAS HGEMM failed: status {}", status),
         });
     }
@@ -302,7 +318,11 @@ pub fn hgemm_f16(
 /// - weight is (vocab_size, n_embd) = M×K
 /// - input is (n_embd, tokens) = K×N
 /// - output is (vocab_size, tokens) = M×N (f32 logits)
-pub fn hgemm_f16_to_f32(
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not been destroyed.
+pub unsafe fn hgemm_f16_to_f32(
     handle: RocblasHandle,
     weight: &TensorHip<f16>,
     input: &TensorHip<f16>,
@@ -329,21 +349,19 @@ pub fn hgemm_f16_to_f32(
         });
     }
 
-    let status = unsafe {
-        launch_hgemm_f32_out(
-            handle,
-            m,
-            n,
-            k,
-            weight.as_ptr() as *const u16,
-            input.as_ptr() as *const u16,
-            output.as_mut_ptr(),
-        )
-    };
+    let status = launch_hgemm_f32_out(
+        handle,
+        m,
+        n,
+        k,
+        weight.as_ptr() as *const u16,
+        input.as_ptr() as *const u16,
+        output.as_mut_ptr(),
+    );
 
     if status != ROCBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
+            code: rocblas_to_hip_error(status),
             message: format!("rocBLAS HGEMM_F32_OUT failed: status {}", status),
         });
     }
@@ -360,7 +378,11 @@ pub fn hgemm_f16_to_f32(
 /// * `weight` - Weight matrix (A) on device
 /// * `input` - Input matrix (B) on device
 /// * `output` - Output matrix (C) on device
-pub fn sgemm_f32(
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not been destroyed.
+pub unsafe fn sgemm_f32(
     handle: RocblasHandle,
     weight: &TensorHip<f32>,
     input: &TensorHip<f32>,
@@ -397,23 +419,21 @@ pub fn sgemm_f32(
         });
     }
 
-    let status = unsafe {
-        launch_sgemm(
-            handle,
-            m,
-            n,
-            k,
-            1.0, // alpha
-            weight.as_ptr(),
-            input.as_ptr(),
-            0.0, // beta
-            output.as_mut_ptr(),
-        )
-    };
+    let status = launch_sgemm(
+        handle,
+        m,
+        n,
+        k,
+        1.0, // alpha
+        weight.as_ptr(),
+        input.as_ptr(),
+        0.0, // beta
+        output.as_mut_ptr(),
+    );
 
     if status != ROCBLAS_STATUS_SUCCESS {
         return Err(HipErrorKind {
-            code: unsafe { rocblas_to_hip_error(status) },
+            code: rocblas_to_hip_error(status),
             message: format!("rocBLAS SGEMM failed: status {}", status),
         });
     }
@@ -486,13 +506,14 @@ pub fn hip_sgemm(
 
     // Create rocBLAS handle
     let handle = rocblas_create()?;
-    rocblas_set_stream(handle, &stream)?;
+    // SAFETY: handle was just created by rocblas_create, so it is valid.
+    unsafe { rocblas_set_stream(handle, &stream)? };
 
-    // Run GEMM
-    sgemm_f32(handle, &d_weight, &d_input, &mut d_output)?;
+    // SAFETY: handle is valid (created above, not yet destroyed).
+    unsafe { sgemm_f32(handle, &d_weight, &d_input, &mut d_output)? };
 
-    // Clean up handle
-    rocblas_destroy(handle)?;
+    // SAFETY: handle is valid and will not be used after this.
+    unsafe { rocblas_destroy(handle)? };
 
     // Copy back result
     d_output.to_vec(&stream)
@@ -556,13 +577,14 @@ pub fn hip_hgemm(
 
     // Create rocBLAS handle
     let handle = rocblas_create()?;
-    rocblas_set_stream(handle, &stream)?;
+    // SAFETY: handle was just created by rocblas_create, so it is valid.
+    unsafe { rocblas_set_stream(handle, &stream)? };
 
-    // Run GEMM
-    hgemm_f16(handle, &d_weight, &d_input, &mut d_output)?;
+    // SAFETY: handle is valid (created above, not yet destroyed).
+    unsafe { hgemm_f16(handle, &d_weight, &d_input, &mut d_output)? };
 
-    // Clean up handle
-    rocblas_destroy(handle)?;
+    // SAFETY: handle is valid and will not be used after this.
+    unsafe { rocblas_destroy(handle)? };
 
     // Copy back result
     d_output.to_vec(&stream)

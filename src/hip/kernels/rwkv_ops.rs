@@ -610,7 +610,11 @@ pub fn hip_control_k(
 /// * `state_out` - Output state tensor [N, N, H, B]
 /// * `sa_tmp` - Scratch buffer for intermediate sa computation [N, H, B]
 /// * `stream` - HIP stream
-pub fn wkv7_gemv_f32(
+///
+/// # Safety
+/// The caller must ensure that `handle` is a valid rocBLAS handle
+/// that was created by `rocblas_create` and has not been destroyed.
+pub unsafe fn wkv7_gemv_f32(
     handle: RocblasHandle,
     w_decay: &TensorHip<f32>,
     q: &TensorHip<f32>,
@@ -718,26 +722,24 @@ pub fn wkv7_gemv_f32(
         });
     }
 
-    unsafe {
-        check(launch_wkv7_gemv(
-            handle,
-            w_decay.as_ptr(),
-            q.as_ptr(),
-            k.as_ptr(),
-            v.as_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            state_in.as_ptr(),
-            output.as_mut_ptr(),
-            state_out.as_mut_ptr(),
-            sa_tmp.as_mut_ptr(),
-            n as c_int,
-            h as c_int,
-            t as c_int,
-            b_size as c_int,
-            stream.handle(),
-        ))
-    }
+    check(launch_wkv7_gemv(
+        handle,
+        w_decay.as_ptr(),
+        q.as_ptr(),
+        k.as_ptr(),
+        v.as_ptr(),
+        a.as_ptr(),
+        b.as_ptr(),
+        state_in.as_ptr(),
+        output.as_mut_ptr(),
+        state_out.as_mut_ptr(),
+        sa_tmp.as_mut_ptr(),
+        n as c_int,
+        h as c_int,
+        t as c_int,
+        b_size as c_int,
+        stream.handle(),
+    ))
 }
 
 /// Compute WKV7 using rocBLAS GEMV on host data, returning (output, state_out).
@@ -806,7 +808,8 @@ pub fn hip_wkv7_gemv(
 
     // Create rocBLAS handle
     let handle = rocblas_create()?;
-    rocblas_set_stream(handle, &stream)?;
+    // SAFETY: handle was just created by rocblas_create, so it is valid.
+    unsafe { rocblas_set_stream(handle, &stream)? };
 
     let input_shape = TensorShape::new(n, h, t, batch);
     let state_shape = TensorShape::new(n, n, h, batch);
@@ -823,23 +826,26 @@ pub fn hip_wkv7_gemv(
     let mut d_state_out = TensorHip::<f32>::new(state_shape)?;
     let mut d_sa_tmp = TensorHip::<f32>::new(sa_shape)?;
 
-    wkv7_gemv_f32(
-        handle,
-        &d_w_decay,
-        &d_q,
-        &d_k,
-        &d_v,
-        &d_a,
-        &d_b,
-        &d_state_in,
-        &mut d_output,
-        &mut d_state_out,
-        &mut d_sa_tmp,
-        &stream,
-    )?;
+    // SAFETY: handle is valid (created above, not yet destroyed).
+    unsafe {
+        wkv7_gemv_f32(
+            handle,
+            &d_w_decay,
+            &d_q,
+            &d_k,
+            &d_v,
+            &d_a,
+            &d_b,
+            &d_state_in,
+            &mut d_output,
+            &mut d_state_out,
+            &mut d_sa_tmp,
+            &stream,
+        )?
+    };
 
-    // Clean up rocBLAS handle
-    rocblas_destroy(handle)?;
+    // SAFETY: handle is valid and will not be used after this.
+    unsafe { rocblas_destroy(handle)? };
 
     let output = d_output.to_vec(&stream)?;
     let state_out = d_state_out.to_vec(&stream)?;
