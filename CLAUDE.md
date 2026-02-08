@@ -382,16 +382,18 @@ Edit step.rs to replace lines 150-220 with: attention_block(args)
 
 ## Platform Assumptions
 
-Never assume what tools, hardware, SDKs, or runtime features are available. Always investigate the actual system capabilities before planning or writing code. Check installed toolchains, device properties, available APIs, and supported features rather than guessing based on prior knowledge.
+**CRITICAL: Never assume what is or isn't available.** This machine has a GPU (AMD ROCm), CUDA may or may not be present, specific CLI tools may or may not exist. **Always run a check command** (`rocm-smi`, `nvidia-smi`, `which duckdb`, etc.) before concluding something is unavailable. Do not skip acceptance criteria verification because you assumed the hardware or tool isn't present — check first.
 
 ## Compact Instructions
 
 When context is compacted, preserve:
+- **NEVER assume hardware/tools are unavailable** — always check (`rocm-smi`, `which X`, etc.) before skipping verification
+- **Acceptance criteria must be actually verified** — run the commands, check the output, don't assume "should work"
 - The `br` issue tracker workflow (ready, show, claim, close)
-- **Ticket closure requirements** (commit before close, verify acceptance criteria)
+- **Ticket closure requirements** (commit before close, verify acceptance criteria with runtime checks)
 - **Parallel work requires git worktrees** — one worktree per agent, cherry-pick/rebase back (no merge commits, linear history)
 - **Never reproduce, always copy** — use cp/mv/Edit, never rewrite existing content from memory
 - **Refactoring = extract, don't rewrite** — use sed to extract code, not retype from memory
 - Current branch context and recent commits
-- References to plan documents (e.g., `docs/RWKV7_HIP_BACKEND_PLAN.md`)
+- References to plan documents (e.g., `docs/plans/RWKV7_HIP_BACKEND_PLAN.md`)
 - Architectural decisions (e.g., column-major GEMM, tolerance specifications)
