@@ -135,7 +135,16 @@ When working on tickets, follow this process:
    br comments add <id> "Summary of changes and any notes for downstream tickets"
    br close <id> --suggest-next
    ```
-8. **DO NOT COMMIT** - The orchestrator will validate the implementation, review divergence comments, and commit both code and `.beads/issues.jsonl` together after confirmation.
+8. **Commit in your worktree** (if working in a worktree — see "Parallel Ticket Work" below):
+   ```bash
+   cd /tmp/worktree-bd-TICKET
+   git checkout -b ticket/bd-TICKET
+   git add -A
+   git commit -m "Description (bd-TICKET)"
+   ```
+   Print the commit hash. The orchestrator cherry-picks it into main.
+
+   **If working directly in `/workspace/hip-rwkv/`** (sequential single-ticket work): Do NOT commit. The orchestrator commits.
 
 **Before Closing a Ticket (agent checklist):**
 - [ ] All acceptance criteria are **verified and met**
@@ -143,6 +152,7 @@ When working on tickets, follow this process:
 - [ ] Implementation follows architectural decisions from referenced plan documents
 - [ ] A closing comment has been added summarizing the work and any divergences
 - [ ] Any divergences from the plan are documented in a comment
+- [ ] If in a worktree: changes are committed on a feature branch with the hash printed
 
 **Do NOT close a ticket if:**
 - Acceptance criteria checkboxes are not satisfied
@@ -150,29 +160,35 @@ When working on tickets, follow this process:
 
 **Orchestrator responsibilities (after agent closes ticket):**
 1. Review the closing comment and any divergence notes
-2. Validate the implementation (run tests, check code)
-3. If approved, commit code and beads together:
-   ```bash
-   git add . && git commit -m "Description (bd-xxx)"
-   ```
+2. Cherry-pick the agent's commit from the worktree: `git cherry-pick <hash>`
+3. Verify `cargo check` passes after cherry-pick
 4. If divergence is unacceptable, reopen ticket and request changes
+5. Clean up worktree: `git worktree remove --force /tmp/worktree-bd-TICKET`
+6. Commit beads updates separately
 
-Example agent workflow:
+Example agent workflow (worktree):
 ```bash
-br ready                           # Find next ticket
+# Orchestrator creates worktree and launches agent with:
+#   "Work in /tmp/worktree-bd-TICKET/"
 br show bd-2sh.2.1                 # Review requirements
 br show bd-2sh.2                   # Read parent for broader context
 br comments list bd-2sh.1.3        # Check notes from predecessor ticket
 # Read any referenced plan docs!
 br update bd-2sh.2.1 --claim       # Claim it
-# ... implement changes ...
+# ... implement changes in /tmp/worktree-bd-TICKET/ ...
 # If diverging from plan:
 br comments add bd-2sh.2.1 "Diverged from plan: had to also update X because Y"
 # Run tests to verify
-cargo test --lib
+cargo check && cargo test -p crate-name
+# Commit in worktree
+cd /tmp/worktree-bd-TICKET
+git checkout -b ticket/bd-2sh.2.1
+git add -A
+git commit -m "Implement X (bd-2sh.2.1)"
+# Print hash for orchestrator
+git rev-parse HEAD
 br comments add bd-2sh.2.1 "Done: implemented X with tests. Note: Z for downstream."
 br close bd-2sh.2.1 --suggest-next
-# DO NOT COMMIT - orchestrator handles commits
 ```
 
 ### JSON Output
@@ -277,55 +293,47 @@ When an orchestrator agent farms out multiple tickets to sub-agents in parallel,
 - Test runs picking up partial changes from a sibling agent
 - Merge conflicts from concurrent edits to the same file
 
-### Orchestrator responsibilities
-
-The orchestrator (parent agent) manages the worktree lifecycle:
+### Orchestrator workflow
 
 ```bash
-# Before launching parallel agents, create worktrees from the current branch:
-git worktree add /tmp/worktree-bd-TICKET_A hip   # or whatever the current branch is
-git worktree add /tmp/worktree-bd-TICKET_B hip
+# 1. Create worktrees from current HEAD for each parallel ticket:
+git worktree add /tmp/worktree-bd-TICKET_A HEAD
+git worktree add /tmp/worktree-bd-TICKET_B HEAD
 
-# After agents complete, rebase their commits onto the main branch:
-# (orchestrator reviews, resolves conflicts, and integrates)
+# 2. Launch agents, telling each to work in its worktree path
+
+# 3. After each agent completes, cherry-pick its commit:
+git cherry-pick <commit-hash>
+cargo check  # verify clean build
+
+# 4. Clean up:
+git worktree remove --force /tmp/worktree-bd-TICKET_A
 ```
 
 ### Agent instructions (include in agent prompts)
 
 Tell each agent:
 
-1. **Work in your assigned worktree** — all file reads, writes, and git operations happen in the worktree directory (e.g., `/tmp/worktree-bd-TICKET_A/`), NOT in `/workspace/web-rwkv/`.
-2. **Create a feature branch** from the worktree:
+1. **Work in your assigned worktree** — all file reads, writes, and git operations happen in the worktree directory (e.g., `/tmp/worktree-bd-TICKET_A/`), NOT in `/workspace/hip-rwkv/`.
+2. **Create a feature branch and commit**:
    ```bash
    cd /tmp/worktree-bd-TICKET_A
    git checkout -b ticket/bd-TICKET_A
+   # ... make changes ...
+   git add -A
+   git commit -m "Description (bd-TICKET_A)"
    ```
-3. **Commit only your own changes** — since the worktree starts clean, `git add .` is safe.
+3. **Print the commit hash** so the orchestrator can cherry-pick it.
 4. **Run `cargo check` / tests from the worktree directory** so you only see your own changes.
-5. **Do NOT touch `/workspace/web-rwkv/`** — that is the orchestrator's workspace.
+5. **Do NOT touch `/workspace/hip-rwkv/`** — that is the orchestrator's workspace.
 
-### After agents complete
+**IMPORTANT: Use cherry-pick, NOT merge.** We maintain linear history — no merge commits.
 
-The orchestrator rebases branches back (keep linear history, no merge commits):
-
-```bash
-# From the main workspace:
-cd /workspace/web-rwkv
-git cherry-pick <commit-hash>   # cherry-pick each agent's commit(s) onto hip
-
-# Clean up worktrees:
-git worktree remove /tmp/worktree-bd-TICKET_A
-git worktree remove /tmp/worktree-bd-TICKET_B
-```
-
-**IMPORTANT: Use rebase/cherry-pick, NOT merge.** We maintain linear history — no merge commits.
-
-If there are conflicts, the orchestrator resolves them before proceeding to dependent tickets.
+If there are conflicts during cherry-pick, the orchestrator resolves them before proceeding.
 
 ### When worktrees are NOT needed
 
-- Sequential ticket work (one at a time) — just work in `/workspace/web-rwkv/` directly
-- Tickets that touch completely disjoint files with no shared dependencies — still preferred to use worktrees for safety
+- Sequential ticket work (one at a time) — just work in `/workspace/hip-rwkv/` directly
 
 ## Never Reproduce — Always Copy
 
