@@ -41,6 +41,12 @@ br update <id> --claim
 br update <id> -s in_progress
 br update <id> -s blocked
 
+# Update issue description (use --description, NOT -d; there is no short flag)
+br update <id> --description "New description"
+
+# Update issue title (use --title, NOT -t; -t is --type)
+br update <id> --title "New title"
+
 # Close an issue
 br close <id>
 br close <id> -r "reason for closing"
@@ -48,6 +54,12 @@ br close <id> -r "reason for closing"
 # Close and see newly unblocked issues
 br close <id> --suggest-next
 ```
+
+**`br update` flag gotchas** — short flags differ between `create` and `update`:
+- `br create` accepts `-d` for description, but `br update` requires `--description` (no short form)
+- `br update -t` means `--type`, not `--title` (use `--title` for title)
+- `br update -s` is `--status`, `-p` is `--priority` — these are the same as `create`
+- For multiline descriptions, use a HEREDOC: `br update <id> --description "$(cat <<'EOF' ... EOF)"`
 
 #### Creating Issues
 
