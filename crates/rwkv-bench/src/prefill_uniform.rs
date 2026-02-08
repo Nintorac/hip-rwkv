@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::canonical_length_list;
+/// use rwkv_bench::prefill_uniform::canonical_length_list;
 ///
 /// let lengths = canonical_length_list(128);
 /// // Returns [1, 32, 64, 127, 128, 129, 256, 512, 1024]
@@ -109,7 +109,7 @@ pub fn canonical_length_list(token_chunk_size: u32) -> Vec<u32> {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::total_token_targets;
+/// use rwkv_bench::prefill_uniform::total_token_targets;
 ///
 /// let targets = total_token_targets(256);
 /// assert_eq!(targets, vec![128, 256, 512, 1024, 2048]);
@@ -142,7 +142,7 @@ pub fn total_token_targets(token_chunk_size: u32) -> Vec<u32> {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::seq_len_from_total_tokens;
+/// use rwkv_bench::prefill_uniform::seq_len_from_total_tokens;
 ///
 /// // For T=1024, B=4: L = ceil(1024/4) = 256
 /// assert_eq!(seq_len_from_total_tokens(1024, 4), 256);
@@ -174,7 +174,7 @@ pub fn seq_len_from_total_tokens(total_tokens: u32, batch_size: u32) -> u32 {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::target_mode_lengths;
+/// use rwkv_bench::prefill_uniform::target_mode_lengths;
 ///
 /// let lengths = target_mode_lengths(256, 4);
 /// // For B=4, C=256:
@@ -212,7 +212,7 @@ pub fn target_mode_lengths(token_chunk_size: u32, batch_size: u32) -> Vec<u32> {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::all_prefill_lengths;
+/// use rwkv_bench::prefill_uniform::all_prefill_lengths;
 ///
 /// let lengths = all_prefill_lengths(128, 4);
 /// // Contains both canonical lengths and target-mode lengths
@@ -239,7 +239,7 @@ pub fn all_prefill_lengths(token_chunk_size: u32, batch_size: u32) -> Vec<u32> {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::TokenGenerator;
+/// use rwkv_bench::prefill_uniform::TokenGenerator;
 ///
 /// let mut gen = TokenGenerator::new(12345, 50257);
 /// let tokens = gen.generate(10);
@@ -390,7 +390,7 @@ impl PrefillResult {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_uniform::compute_ttft_stats;
+/// use rwkv_bench::prefill_uniform::compute_ttft_stats;
 ///
 /// let values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
 /// let (min, p50, max) = compute_ttft_stats(&values);

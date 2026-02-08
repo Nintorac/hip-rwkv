@@ -121,8 +121,8 @@ impl std::fmt::Display for SkipReason {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::config::{BenchmarkCase, ModelConfig, BackendConfig, SkipConditions};
-/// use web_rwkv_bench::skip::should_skip;
+/// use rwkv_bench::config::{BenchmarkCase, ModelConfig, BackendConfig, SkipConditions};
+/// use rwkv_bench::skip::should_skip;
 ///
 /// let case = BenchmarkCase {
 ///     batch_size: 64,
@@ -445,8 +445,8 @@ impl std::fmt::Display for StopReason {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::config::Limits;
-/// use web_rwkv_bench::skip::LimitsTracker;
+/// use rwkv_bench::config::Limits;
+/// use rwkv_bench::skip::LimitsTracker;
 ///
 /// let limits = Limits {
 ///     max_total_cases: 100,

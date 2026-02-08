@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use web_rwkv_bench::metadata::{collect_run_metadata, RunMetadata};
+//! use rwkv_bench::metadata::{collect_run_metadata, RunMetadata};
 //!
 //! let metadata = collect_run_metadata(None);
 //! println!("Git SHA: {:?}", metadata.git.sha);
@@ -519,7 +519,7 @@ fn try_rocm_smi() -> Option<GpuInfo> {
 /// # Example
 ///
 /// ```no_run
-/// use web_rwkv_bench::metadata::collect_run_metadata;
+/// use rwkv_bench::metadata::collect_run_metadata;
 ///
 /// // Without GPU info (will try to detect from system)
 /// let metadata = collect_run_metadata(None);

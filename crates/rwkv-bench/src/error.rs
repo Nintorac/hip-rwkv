@@ -26,8 +26,8 @@
 //! # Example
 //!
 //! ```
-//! use web_rwkv_bench::error::{BenchError, classify_error};
-//! use web_rwkv_bench::jsonl::ErrorKind;
+//! use rwkv_bench::error::{BenchError, classify_error};
+//! use rwkv_bench::jsonl::ErrorKind;
 //!
 //! // Classify an error
 //! let error = BenchError::ModelLoad {
@@ -176,8 +176,8 @@ impl std::error::Error for BenchError {}
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::error::{BenchError, classify_error};
-/// use web_rwkv_bench::jsonl::ErrorKind;
+/// use rwkv_bench::error::{BenchError, classify_error};
+/// use rwkv_bench::jsonl::ErrorKind;
 ///
 /// let error = BenchError::OutOfMemory {
 ///     message: "failed to allocate 4GB tensor".to_string(),
@@ -242,8 +242,8 @@ pub fn classify_error(error: &BenchError) -> (ErrorKind, String) {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::error::classify_error_message;
-/// use web_rwkv_bench::jsonl::ErrorKind;
+/// use rwkv_bench::error::classify_error_message;
+/// use rwkv_bench::jsonl::ErrorKind;
 ///
 /// let (kind, _) = classify_error_message("GPU allocation failed: out of memory");
 /// assert_eq!(kind, ErrorKind::OutOfMemory);

@@ -9,8 +9,8 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use web_rwkv_bench::sweep::{SweepEngine, SweepConfig, Hooks};
-//! use web_rwkv_bench::config::{SkipConditions, Limits};
+//! use rwkv_bench::sweep::{SweepEngine, SweepConfig, Hooks};
+//! use rwkv_bench::config::{SkipConditions, Limits};
 //!
 //! let sweep_config = SweepConfig {
 //!     models: vec![/* model configs */],

@@ -1,9 +1,9 @@
 [package]
-name = "web-rwkv-bench"
+name = "rwkv-bench"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
-description = "Benchmarking utilities for web-rwkv"
+description = "Benchmarking utilities for RWKV"
 license.workspace = true
 
 [dependencies]

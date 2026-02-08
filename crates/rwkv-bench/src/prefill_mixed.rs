@@ -122,7 +122,7 @@ impl fmt::Display for MixedCaseId {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_mixed::{generate_lengths, MixedCaseId};
+/// use rwkv_bench::prefill_mixed::{generate_lengths, MixedCaseId};
 ///
 /// let lengths = generate_lengths(MixedCaseId::Staircase8, 8, 256).unwrap();
 /// assert_eq!(lengths.len(), 8);
@@ -162,7 +162,7 @@ pub fn generate_lengths(
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::prefill_mixed::generate_lengths_from_str;
+/// use rwkv_bench::prefill_mixed::generate_lengths_from_str;
 ///
 /// let lengths = generate_lengths_from_str("staircase_8", 8, 256).unwrap();
 /// assert_eq!(lengths.len(), 8);
@@ -356,7 +356,7 @@ impl PrefillMixedResult {
     /// # Example
     ///
     /// ```
-    /// use web_rwkv_bench::prefill_mixed::PrefillMixedResult;
+    /// use rwkv_bench::prefill_mixed::PrefillMixedResult;
     ///
     /// let ttft_ms = vec![10.0, 15.0, 25.0, 40.0];
     /// let lengths = vec![100, 200, 300, 400];
@@ -426,7 +426,7 @@ impl MixedTtftTracker {
     /// # Example
     ///
     /// ```
-    /// use web_rwkv_bench::prefill_mixed::MixedTtftTracker;
+    /// use rwkv_bench::prefill_mixed::MixedTtftTracker;
     ///
     /// let lengths = vec![100, 200, 300, 400];
     /// let tracker = MixedTtftTracker::new(lengths);

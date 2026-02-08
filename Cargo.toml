@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/web-rwkv-bench"]
+members = [".", "crates/rwkv-bench"]
 
 [workspace.package]
 authors = ["Zhenyuan Zhang <cryscan@umich.edu>"]
@@ -42,7 +42,7 @@ test-case = "3.3.1"
 tokio = { version = "1.41", features = ["full"] }
 web-rwkv = { version = "0.10.19", features = ["native"] }
 wgpu = "28.0"
-web-rwkv-bench = { path = "crates/web-rwkv-bench" }
+rwkv-bench = { path = "crates/rwkv-bench" }
 
 [features]
 default = []

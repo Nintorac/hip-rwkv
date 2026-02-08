@@ -1,6 +1,6 @@
-//! # web-rwkv-bench
+//! # rwkv-bench
 //!
-//! Benchmarking utilities for the web-rwkv project.
+//! Benchmarking utilities for the RWKV project.
 //!
 //! This crate provides:
 //! - Config parsing for benchmark settings (skip conditions, limits)
@@ -25,8 +25,8 @@
 //! Skip conditions are applied during expansion, and limits are tracked to control execution.
 //!
 //! ```rust,ignore
-//! use web_rwkv_bench::sweep::{SweepEngine, SweepConfig, Hooks};
-//! use web_rwkv_bench::config::{SkipConditions, Limits};
+//! use rwkv_bench::sweep::{SweepEngine, SweepConfig, Hooks};
+//! use rwkv_bench::config::{SkipConditions, Limits};
 //!
 //! let config = SweepConfig { /* ... */ };
 //! let mut engine = SweepEngine::new(config, SkipConditions::default(), Limits::default());
@@ -50,7 +50,7 @@
 //! The `prefill_uniform` module provides utilities for measuring prompt processing performance:
 //!
 //! ```rust
-//! use web_rwkv_bench::prefill_uniform::{canonical_length_list, target_mode_lengths};
+//! use rwkv_bench::prefill_uniform::{canonical_length_list, target_mode_lengths};
 //!
 //! // Get canonical lengths for chunk size 128
 //! let lengths = canonical_length_list(128);
@@ -65,8 +65,8 @@
 //! The benchmark runner uses a continue-on-error policy by default:
 //!
 //! ```rust,ignore
-//! use web_rwkv_bench::error::{BenchError, classify_error, ErrorContext};
-//! use web_rwkv_bench::jsonl::{ErrorKind, Status};
+//! use rwkv_bench::error::{BenchError, classify_error, ErrorContext};
+//! use rwkv_bench::jsonl::{ErrorKind, Status};
 //!
 //! // When a benchmark case fails, classify the error
 //! let error = BenchError::OutOfMemory { message: "allocation failed".to_string() };
@@ -81,7 +81,7 @@
 //! mixed-batch prefill benchmarks:
 //!
 //! ```rust,ignore
-//! use web_rwkv_bench::prefill_mixed::{generate_lengths, MixedCaseId};
+//! use rwkv_bench::prefill_mixed::{generate_lengths, MixedCaseId};
 //!
 //! // Generate lengths for staircase_8 pattern with B=8, C=256
 //! let lengths = generate_lengths(MixedCaseId::Staircase8, 8, 256).unwrap();

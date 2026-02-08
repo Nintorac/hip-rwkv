@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use web_rwkv_bench::scenarios::{DecodeScenario, DecodeConfig};
+//! use rwkv_bench::scenarios::{DecodeScenario, DecodeConfig};
 //!
 //! let config = DecodeConfig {
 //!     decode_steps: 512,

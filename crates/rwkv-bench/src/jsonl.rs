@@ -17,8 +17,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use web_rwkv_bench::jsonl::{JsonlWriter, RunHeader, MeasureRecord, Scenario, Status};
-//! use web_rwkv_bench::jsonl::{HostInfo, GpuInfo, DecodeMetrics};
+//! use rwkv_bench::jsonl::{JsonlWriter, RunHeader, MeasureRecord, Scenario, Status};
+//! use rwkv_bench::jsonl::{HostInfo, GpuInfo, DecodeMetrics};
 //! use std::path::Path;
 //!
 //! // Create writer and write run header
@@ -593,7 +593,7 @@ pub struct CaseIdParams<'a> {
 /// # Example
 ///
 /// ```
-/// use web_rwkv_bench::jsonl::{generate_case_id, CaseIdParams, Scenario};
+/// use rwkv_bench::jsonl::{generate_case_id, CaseIdParams, Scenario};
 ///
 /// let params = CaseIdParams {
 ///     scenario: Scenario::DecodeOnly,

@@ -1,4 +1,4 @@
-//! Integration test runner harness for web-rwkv benchmarks.
+//! Integration test runner harness for RWKV benchmarks.
 //!
 //! This module provides a config-driven benchmark runner that executes performance
 //! sweeps across model, backend, batch size, and sequence length dimensions.
@@ -51,7 +51,7 @@ use web_rwkv::{
     },
 };
 
-use web_rwkv_bench::{
+use rwkv_bench::{
     collect_run_metadata, generate_case_id, generate_run_id, generate_timestamp_utc,
     round_chunk_size, CaseIdParams, CaseIdentity, DecodeConfig, DecodeResults, JsonlGpuInfo,
     JsonlHostInfo as HostInfo, JsonlWriter, MeasureRecord, Metrics, PrefillMetrics, PrefillResult,
@@ -863,7 +863,7 @@ async fn run_decode_benchmark(
     repeats: u32,
 ) -> anyhow::Result<DecodeResults> {
     use std::time::{Duration, Instant};
-    use web_rwkv_bench::{DecodeRepeatResult, TokenRng};
+    use rwkv_bench::{DecodeRepeatResult, TokenRng};
 
     let vocab_size = loaded.vocab_size;
     let runtime = &loaded.runtime;
