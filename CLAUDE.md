@@ -155,8 +155,10 @@ When working on tickets, follow this process:
 - [ ] If in a worktree: changes are committed on a feature branch with the hash printed
 
 **Do NOT close a ticket if:**
-- Acceptance criteria checkboxes are not satisfied
+- Any acceptance criterion has not been **actually verified** (not just "should work")
+- You assumed a resource (GPU, model, tool, service) is unavailable without checking — **always check first**
 - Tests pass only with loosened tolerances (document the gap instead)
+- If you cannot verify a criterion, **leave the ticket open** and explain what's blocking verification
 
 **Orchestrator responsibilities (after agent closes ticket):**
 1. Review the closing comment and any divergence notes
