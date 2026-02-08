@@ -437,8 +437,8 @@ output:
   directory: "benchmarks/results"
 
   # File naming pattern
-  # Available placeholders: {profile}, {timestamp}, {git_sha}, {run_id}
-  filename_pattern: "bench_{profile}_{timestamp}.jsonl"
+  # Available placeholders: {profile}, {timestamp}, {git_sha}, {run_id}, {gpu}, {name}
+  filename_pattern: "{profile}_{gpu}_{name}.jsonl"
 
   # Whether to append to existing file or create new
   mode: "create_new"

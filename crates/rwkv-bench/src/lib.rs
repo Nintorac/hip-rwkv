@@ -92,6 +92,7 @@ pub mod config;
 pub mod error;
 pub mod jsonl;
 pub mod metadata;
+pub mod naming;
 pub mod prefill_mixed;
 pub mod prefill_uniform;
 pub mod scenarios;
@@ -107,6 +108,7 @@ pub use jsonl::{
     Scenario, ScenarioParams, Status, SCHEMA_VERSION,
 };
 pub use metadata::{collect_run_metadata, BuildInfo, GitInfo, GpuInfo, HostInfo, RunMetadata};
+pub use naming::{generate_human_name, shorten_gpu};
 pub use prefill_mixed::{
     all_mixed_case_ids, generate_lengths, generate_lengths_from_str, total_tokens, MixedCaseError,
     MixedCaseId, MixedCaseResult, MixedTtftTracker, PrefillMixedConfig, PrefillMixedResult,

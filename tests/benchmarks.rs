@@ -52,10 +52,11 @@ use web_rwkv::{
 };
 
 use rwkv_bench::{
-    collect_run_metadata, generate_case_id, generate_run_id, generate_timestamp_utc,
-    round_chunk_size, CaseIdParams, CaseIdentity, DecodeConfig, DecodeResults, JsonlGpuInfo,
-    JsonlHostInfo as HostInfo, JsonlWriter, MeasureRecord, Metrics, PrefillMetrics, PrefillResult,
-    PrefillUniformConfig, RunHeader, Scenario, ScenarioParams, Status, TokenGenerator,
+    collect_run_metadata, generate_case_id, generate_human_name, generate_run_id,
+    generate_timestamp_utc, round_chunk_size, shorten_gpu, CaseIdParams, CaseIdentity,
+    DecodeConfig, DecodeResults, JsonlGpuInfo, JsonlHostInfo as HostInfo, JsonlWriter,
+    MeasureRecord, Metrics, PrefillMetrics, PrefillResult, PrefillUniformConfig, RunHeader,
+    Scenario, ScenarioParams, Status, TokenGenerator,
 };
 
 /// Default config file path
@@ -1277,17 +1278,33 @@ async fn bench_smoke_async() {
         return;
     }
 
-    // Generate run ID and output file path
+    // Generate run ID, human name, and collect metadata
     let run_id = generate_run_id();
+    let human_name = generate_human_name(&run_id);
     let timestamp = generate_timestamp_utc();
+    let metadata = collect_run_metadata(None);
+    let gpu_short = shorten_gpu(
+        metadata
+            .host
+            .cpu
+            .as_deref()
+            .unwrap_or("unknown"),
+    );
+
     let output_filename = config
         .output
         .filename_pattern
         .replace("{profile}", &profile_name)
         .replace("{timestamp}", &timestamp.replace(":", "").replace("-", ""))
-        .replace("{run_id}", &run_id);
+        .replace("{run_id}", &run_id)
+        .replace("{name}", &human_name)
+        .replace("{gpu}", &gpu_short.replace(' ', "_"));
     let output_path = output_dir.join(&output_filename);
 
+    println!(
+        "[bench] Run: {} / {} / {}",
+        human_name, profile_name, gpu_short
+    );
     println!("[bench] Output file: {}", output_path.display());
 
     // Create JSONL writer
@@ -1298,16 +1315,6 @@ async fn bench_smoke_async() {
             return;
         }
     };
-
-    // Add this file to the dashboard index.json
-    let index_path = output_dir.join("index.json");
-    match update_dashboard_index(&index_path, &output_filename) {
-        Ok(count) => println!("[bench] Updated dashboard index ({count} files)"),
-        Err(e) => eprintln!("[bench] Warning: failed to update dashboard index: {e}"),
-    }
-
-    // Collect metadata and write run header
-    let metadata = collect_run_metadata(None);
 
     let run_header = RunHeader {
         run_id: run_id.clone(),
