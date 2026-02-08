@@ -67,10 +67,8 @@ pub struct CaseParams {
     pub model_name: String,
     /// Model size label (e.g., "9m", "0.1b")
     pub model_size: String,
-    /// Backend identifier ("wgpu" or "hip")
-    pub backend_id: String,
-    /// WGPU backend variant (e.g., "Vulkan", "Dx12") - optional for wgpu
-    pub wgpu_backend: Option<String>,
+    /// Unified backend string: "wgpu/Vulkan", "wgpu/Metal", "wgpu/Dx12", or "hip"
+    pub backend: String,
     /// Scenario name (e.g., "decode_only", "prefill_uniform", "prefill_mixed")
     pub scenario: String,
     /// Batch size
@@ -97,11 +95,7 @@ impl CaseParams {
     /// and adapter-specific info so it can be used to group repeats and
     /// compare results across runs.
     pub fn case_id(&self) -> String {
-        let mut parts = vec![self.model_name.clone(), self.backend_id.clone()];
-
-        if let Some(ref wgpu_backend) = self.wgpu_backend {
-            parts.push(wgpu_backend.clone());
-        }
+        let mut parts = vec![self.model_name.clone(), self.backend.clone()];
 
         parts.push(self.scenario.clone());
         parts.push(format!("b{}", self.batch_size));
@@ -128,11 +122,7 @@ impl CaseParams {
 
         map.insert("model_id".to_string(), self.model_id.clone());
         map.insert("model_name".to_string(), self.model_name.clone());
-        map.insert("backend_id".to_string(), self.backend_id.clone());
-
-        if let Some(ref wgpu_backend) = self.wgpu_backend {
-            map.insert("wgpu_backend".to_string(), wgpu_backend.clone());
-        }
+        map.insert("backend".to_string(), self.backend.clone());
 
         map.insert("scenario".to_string(), self.scenario.clone());
         map.insert("batch_size".to_string(), self.batch_size.to_string());
@@ -189,16 +179,14 @@ impl From<&SweepModelConfig> for ModelConfig {
 /// Extended backend configuration for sweep expansion.
 #[derive(Debug, Clone)]
 pub struct SweepBackendConfig {
-    /// Backend identifier
-    pub backend_id: String,
-    /// WGPU backend variants (for wgpu only)
-    pub wgpu_backends: Vec<String>,
+    /// Unified backend strings: e.g., ["wgpu/Vulkan", "wgpu/Dx12"] or ["hip"]
+    pub backends: Vec<String>,
 }
 
 impl From<&SweepBackendConfig> for BackendConfig {
     fn from(b: &SweepBackendConfig) -> Self {
         BackendConfig {
-            backend_id: b.backend_id.clone(),
+            backend: b.backends.first().cloned().unwrap_or_default(),
         }
     }
 }
@@ -447,29 +435,16 @@ impl SweepEngine {
 
         // Cartesian expansion: models × backends × batch_sizes × token_chunk_sizes × scenarios
         'expansion: for model in &self.config.models {
-            for backend in &self.config.backends {
-                // For wgpu backend, expand over wgpu_backends
-                // For hip backend, use None for wgpu_backend
-                let wgpu_variants: Vec<Option<String>> =
-                    if backend.backend_id == "wgpu" && !backend.wgpu_backends.is_empty() {
-                        backend
-                            .wgpu_backends
-                            .iter()
-                            .map(|v| Some(v.clone()))
-                            .collect()
-                    } else {
-                        vec![None]
-                    };
-
-                for wgpu_backend in &wgpu_variants {
+            for backend_config in &self.config.backends {
+                for backend in &backend_config.backends {
                     for &batch_size in &self.config.batch_sizes {
                         for &token_chunk_size in &self.config.token_chunk_sizes {
                             for scenario in &self.config.scenarios {
                                 // Expand scenario-specific parameters
                                 let scenario_cases = self.expand_scenario(
                                     model,
+                                    backend_config,
                                     backend,
-                                    wgpu_backend.clone(),
                                     batch_size,
                                     token_chunk_size,
                                     scenario,
@@ -502,8 +477,8 @@ impl SweepEngine {
     fn expand_scenario(
         &self,
         model: &SweepModelConfig,
-        backend: &SweepBackendConfig,
-        wgpu_backend: Option<String>,
+        backend_config: &SweepBackendConfig,
+        backend: &str,
         batch_size: u32,
         token_chunk_size: u32,
         scenario: &str,
@@ -519,8 +494,7 @@ impl SweepEngine {
                         model_id: model.model_id.clone(),
                         model_name: model.model_name.clone(),
                         model_size: model.model_size.clone(),
-                        backend_id: backend.backend_id.clone(),
-                        wgpu_backend: wgpu_backend.clone(),
+                        backend: backend.to_string(),
                         scenario: scenario.to_string(),
                         batch_size,
                         token_chunk_size,
@@ -531,7 +505,7 @@ impl SweepEngine {
                         repeats: self.config.repeats,
                     };
 
-                    let skip_reason = self.evaluate_skip(&params, model, backend);
+                    let skip_reason = self.evaluate_skip(&params, model, backend_config);
                     cases.push(ExpandedCase {
                         params,
                         skip_reason,
@@ -547,8 +521,7 @@ impl SweepEngine {
                         model_id: model.model_id.clone(),
                         model_name: model.model_name.clone(),
                         model_size: model.model_size.clone(),
-                        backend_id: backend.backend_id.clone(),
-                        wgpu_backend: wgpu_backend.clone(),
+                        backend: backend.to_string(),
                         scenario: scenario.to_string(),
                         batch_size,
                         token_chunk_size,
@@ -559,7 +532,7 @@ impl SweepEngine {
                         repeats: self.config.repeats,
                     };
 
-                    let skip_reason = self.evaluate_skip(&params, model, backend);
+                    let skip_reason = self.evaluate_skip(&params, model, backend_config);
                     cases.push(ExpandedCase {
                         params,
                         skip_reason,
@@ -577,8 +550,7 @@ impl SweepEngine {
                             model_id: model.model_id.clone(),
                             model_name: model.model_name.clone(),
                             model_size: model.model_size.clone(),
-                            backend_id: backend.backend_id.clone(),
-                            wgpu_backend: wgpu_backend.clone(),
+                            backend: backend.to_string(),
                             scenario: scenario.to_string(),
                             batch_size,
                             token_chunk_size,
@@ -589,7 +561,7 @@ impl SweepEngine {
                             repeats: self.config.repeats,
                         };
 
-                        let skip_reason = self.evaluate_skip(&params, model, backend);
+                        let skip_reason = self.evaluate_skip(&params, model, backend_config);
                         cases.push(ExpandedCase {
                             params,
                             skip_reason,
@@ -602,8 +574,7 @@ impl SweepEngine {
                                 model_id: model.model_id.clone(),
                                 model_name: model.model_name.clone(),
                                 model_size: model.model_size.clone(),
-                                backend_id: backend.backend_id.clone(),
-                                wgpu_backend: wgpu_backend.clone(),
+                                backend: backend.to_string(),
                                 scenario: scenario.to_string(),
                                 batch_size,
                                 token_chunk_size,
@@ -614,7 +585,7 @@ impl SweepEngine {
                                 repeats: self.config.repeats,
                             };
 
-                            let skip_reason = self.evaluate_skip(&params, model, backend);
+                            let skip_reason = self.evaluate_skip(&params, model, backend_config);
                             cases.push(ExpandedCase {
                                 params,
                                 skip_reason,
@@ -631,8 +602,7 @@ impl SweepEngine {
                     model_id: model.model_id.clone(),
                     model_name: model.model_name.clone(),
                     model_size: model.model_size.clone(),
-                    backend_id: backend.backend_id.clone(),
-                    wgpu_backend: wgpu_backend.clone(),
+                    backend: backend.to_string(),
                     scenario: scenario.to_string(),
                     batch_size,
                     token_chunk_size,
@@ -643,7 +613,7 @@ impl SweepEngine {
                     repeats: self.config.repeats,
                 };
 
-                let skip_reason = self.evaluate_skip(&params, model, backend);
+                let skip_reason = self.evaluate_skip(&params, model, backend_config);
                 cases.push(ExpandedCase {
                     params,
                     skip_reason,
@@ -661,7 +631,7 @@ impl SweepEngine {
         &self,
         params: &CaseParams,
         model: &SweepModelConfig,
-        backend: &SweepBackendConfig,
+        _backend_config: &SweepBackendConfig,
     ) -> Option<SkipReason> {
         let benchmark_case = BenchmarkCase {
             batch_size: params.batch_size,
@@ -671,7 +641,9 @@ impl SweepEngine {
         };
 
         let model_config = ModelConfig::from(model);
-        let backend_config = BackendConfig::from(backend);
+        let backend_config = BackendConfig {
+            backend: params.backend.clone(),
+        };
 
         should_skip(
             &benchmark_case,
@@ -899,10 +871,9 @@ mod tests {
         }
     }
 
-    fn make_backend(id: &str, wgpu_backends: Vec<&str>) -> SweepBackendConfig {
+    fn make_backend(backends: Vec<&str>) -> SweepBackendConfig {
         SweepBackendConfig {
-            backend_id: id.to_string(),
-            wgpu_backends: wgpu_backends.into_iter().map(String::from).collect(),
+            backends: backends.into_iter().map(String::from).collect(),
         }
     }
 
@@ -912,8 +883,7 @@ mod tests {
             model_id: "abc123".to_string(),
             model_name: "test_model".to_string(),
             model_size: "9m".to_string(),
-            backend_id: "wgpu".to_string(),
-            wgpu_backend: Some("Vulkan".to_string()),
+            backend: "wgpu/Vulkan".to_string(),
             scenario: "decode_only".to_string(),
             batch_size: 4,
             token_chunk_size: 128,
@@ -926,8 +896,7 @@ mod tests {
 
         let case_id = params.case_id();
         assert!(case_id.contains("test_model"));
-        assert!(case_id.contains("wgpu"));
-        assert!(case_id.contains("Vulkan"));
+        assert!(case_id.contains("wgpu/Vulkan"));
         assert!(case_id.contains("decode_only"));
         assert!(case_id.contains("b4"));
         assert!(case_id.contains("c128"));
@@ -940,8 +909,7 @@ mod tests {
             model_id: "abc123".to_string(),
             model_name: "test_model".to_string(),
             model_size: "9m".to_string(),
-            backend_id: "hip".to_string(),
-            wgpu_backend: None,
+            backend: "hip".to_string(),
             scenario: "prefill_uniform".to_string(),
             batch_size: 8,
             token_chunk_size: 256,
@@ -959,7 +927,7 @@ mod tests {
         assert!(case_id.contains("b8"));
         assert!(case_id.contains("c256"));
         assert!(case_id.contains("s1024"));
-        assert!(!case_id.contains("Vulkan")); // No wgpu_backend for hip
+        assert!(!case_id.contains("Vulkan")); // No wgpu variant for hip
     }
 
     #[test]
@@ -968,8 +936,7 @@ mod tests {
             model_id: "abc123".to_string(),
             model_name: "test_model".to_string(),
             model_size: "9m".to_string(),
-            backend_id: "wgpu".to_string(),
-            wgpu_backend: None,
+            backend: "wgpu/Vulkan".to_string(),
             scenario: "prefill_mixed".to_string(),
             batch_size: 8,
             token_chunk_size: 256,
@@ -988,7 +955,7 @@ mod tests {
     fn test_sweep_expand_decode_only() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 4],
             token_chunk_sizes: vec![128],
             seq_lens: vec![],
@@ -1017,7 +984,7 @@ mod tests {
     fn test_sweep_expand_prefill_uniform() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 4],
             token_chunk_sizes: vec![128],
             seq_lens: vec![32, 128, 256],
@@ -1046,7 +1013,7 @@ mod tests {
     fn test_sweep_expand_multiple_scenarios() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1],
             token_chunk_sizes: vec![128],
             seq_lens: vec![128],
@@ -1068,7 +1035,7 @@ mod tests {
     fn test_sweep_expand_wgpu_backends() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec!["Vulkan", "Dx12"])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan", "wgpu/Dx12"])],
             batch_sizes: vec![1],
             token_chunk_sizes: vec![128],
             seq_lens: vec![],
@@ -1082,23 +1049,23 @@ mod tests {
         let engine = SweepEngine::new(config, SkipConditions::default(), Limits::default());
         let cases = engine.expand_cases();
 
-        // 1 model × 2 wgpu_backends × 1 batch × 1 chunk × 1 decode_steps = 2 cases
+        // 1 model × 2 backend variants × 1 batch × 1 chunk × 1 decode_steps = 2 cases
         assert_eq!(cases.len(), 2);
 
-        // Check wgpu_backend variants
-        let wgpu_backends: Vec<_> = cases
+        // Check backend variants
+        let backends: Vec<_> = cases
             .iter()
-            .map(|c| c.params.wgpu_backend.clone())
+            .map(|c| c.params.backend.clone())
             .collect();
-        assert!(wgpu_backends.contains(&Some("Vulkan".to_string())));
-        assert!(wgpu_backends.contains(&Some("Dx12".to_string())));
+        assert!(backends.contains(&"wgpu/Vulkan".to_string()));
+        assert!(backends.contains(&"wgpu/Dx12".to_string()));
     }
 
     #[test]
     fn test_sweep_expand_skip_conditions() {
         let config = SweepConfig {
             models: vec![make_model("model1")], // max_batch_size = 32
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 64], // 64 exceeds max
             token_chunk_sizes: vec![128],
             seq_lens: vec![],
@@ -1130,7 +1097,7 @@ mod tests {
     fn test_sweep_expand_prefill_mixed() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![8],
             token_chunk_sizes: vec![128],
             seq_lens: vec![128, 256],
@@ -1174,8 +1141,7 @@ mod tests {
             model_id: "test".to_string(),
             model_name: "test".to_string(),
             model_size: "9m".to_string(),
-            backend_id: "wgpu".to_string(),
-            wgpu_backend: None,
+            backend: "wgpu/Vulkan".to_string(),
             scenario: "decode_only".to_string(),
             batch_size: 1,
             token_chunk_size: 128,
@@ -1199,8 +1165,7 @@ mod tests {
             model_id: "abc123".to_string(),
             model_name: "test_model".to_string(),
             model_size: "9m".to_string(),
-            backend_id: "wgpu".to_string(),
-            wgpu_backend: Some("Vulkan".to_string()),
+            backend: "wgpu/Vulkan".to_string(),
             scenario: "prefill_uniform".to_string(),
             batch_size: 4,
             token_chunk_size: 256,
@@ -1214,8 +1179,7 @@ mod tests {
         let map = params.to_normalized_map();
 
         assert_eq!(map.get("model_id"), Some(&"abc123".to_string()));
-        assert_eq!(map.get("backend_id"), Some(&"wgpu".to_string()));
-        assert_eq!(map.get("wgpu_backend"), Some(&"Vulkan".to_string()));
+        assert_eq!(map.get("backend"), Some(&"wgpu/Vulkan".to_string()));
         assert_eq!(map.get("batch_size"), Some(&"4".to_string()));
         assert_eq!(map.get("seq_len"), Some(&"512".to_string()));
         assert!(!map.contains_key("decode_steps"));
@@ -1226,7 +1190,7 @@ mod tests {
     fn test_count_executable_cases() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 64], // 64 exceeds max
             token_chunk_sizes: vec![128],
             seq_lens: vec![],
@@ -1252,7 +1216,7 @@ mod tests {
     fn test_sweep_executor() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 4],
             token_chunk_sizes: vec![128],
             seq_lens: vec![],
@@ -1289,7 +1253,7 @@ mod tests {
     fn test_sweep_executor_with_run_with_hooks() {
         let config = SweepConfig {
             models: vec![make_model("model1")],
-            backends: vec![make_backend("wgpu", vec![])],
+            backends: vec![make_backend(vec!["wgpu/Vulkan"])],
             batch_sizes: vec![1, 4],
             token_chunk_sizes: vec![128],
             seq_lens: vec![],

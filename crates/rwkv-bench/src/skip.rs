@@ -27,7 +27,7 @@ pub enum SkipReason {
     /// Combination is known to fail
     KnownFailure {
         model_name: String,
-        backend_id: String,
+        backend: String,
     },
     /// Estimated memory usage would exceed available GPU memory
     OomPredicted {
@@ -42,7 +42,7 @@ pub enum SkipReason {
     /// Model is marked as skipped in config
     ModelSkipped { model_name: String },
     /// Backend is marked as skipped in config
-    BackendSkipped { backend_id: String },
+    BackendSkipped { backend: String },
 }
 
 impl std::fmt::Display for SkipReason {
@@ -70,12 +70,12 @@ impl std::fmt::Display for SkipReason {
             }
             SkipReason::KnownFailure {
                 model_name,
-                backend_id,
+                backend,
             } => {
                 write!(
                     f,
                     "known failure: model '{}' on backend '{}'",
-                    model_name, backend_id
+                    model_name, backend
                 )
             }
             SkipReason::OomPredicted {
@@ -101,8 +101,8 @@ impl std::fmt::Display for SkipReason {
             SkipReason::ModelSkipped { model_name } => {
                 write!(f, "model '{}' is marked as skipped", model_name)
             }
-            SkipReason::BackendSkipped { backend_id } => {
-                write!(f, "backend '{}' is marked as skipped", backend_id)
+            SkipReason::BackendSkipped { backend } => {
+                write!(f, "backend '{}' is marked as skipped", backend)
             }
         }
     }
@@ -138,7 +138,7 @@ impl std::fmt::Display for SkipReason {
 /// };
 ///
 /// let backend = BackendConfig {
-///     backend_id: "wgpu".to_string(),
+///     backend: "wgpu/Vulkan".to_string(),
 /// };
 ///
 /// let config = SkipConditions {
@@ -199,7 +199,7 @@ struct RuleContext<'a> {
     seq_len: Option<u32>,
     decode_steps: Option<u32>,
     model_name: &'a str,
-    backend_id: &'a str,
+    backend: &'a str,
 }
 
 /// Evaluate a custom rule condition against the benchmark case.
@@ -209,7 +209,7 @@ struct RuleContext<'a> {
 /// - `seq_len > 1024`
 /// - `model_name == 'rwkv_puzzle15'`
 /// - `batch_size > 16 and seq_len > 1024`
-/// - `model_name == 'rwkv_puzzle15' and backend_id == 'hip'`
+/// - `model_name == 'rwkv_puzzle15' and backend == 'hip'`
 fn evaluate_custom_rule(
     rule: &CustomRule,
     case: &BenchmarkCase,
@@ -222,7 +222,7 @@ fn evaluate_custom_rule(
         seq_len: case.seq_len,
         decode_steps: case.decode_steps,
         model_name: &model.model_name,
-        backend_id: &backend.backend_id,
+        backend: &backend.backend,
     };
 
     evaluate_expression(&rule.condition, &ctx)
@@ -258,6 +258,20 @@ fn evaluate_expression(expr: &str, ctx: &RuleContext) -> bool {
     // Handle parentheses
     if expr.starts_with('(') && expr.ends_with(')') {
         return evaluate_expression(&expr[1..expr.len() - 1], ctx);
+    }
+
+    // Handle starts_with() function: e.g., starts_with(backend, 'wgpu')
+    if let Some(inner) = expr.strip_prefix("starts_with(") {
+        if let Some(inner) = inner.strip_suffix(')') {
+            if let Some((var, prefix)) = inner.split_once(',') {
+                let var_val = resolve_value(var.trim(), ctx);
+                let prefix_val = resolve_value(prefix.trim(), ctx);
+                return match (var_val, prefix_val) {
+                    (Value::String(a), Value::String(b)) => a.starts_with(&b),
+                    _ => false,
+                };
+            }
+        }
     }
 
     // Handle comparison operators (check longer operators first)
@@ -387,7 +401,7 @@ fn resolve_value(s: &str, ctx: &RuleContext) -> Value {
             .map(|v| Value::Number(v as i64))
             .unwrap_or(Value::None),
         "model_name" => Value::String(ctx.model_name.to_string()),
-        "backend_id" => Value::String(ctx.backend_id.to_string()),
+        "backend" => Value::String(ctx.backend.to_string()),
         _ => Value::None,
     }
 }
@@ -595,7 +609,7 @@ mod tests {
 
     fn make_backend(id: &str) -> BackendConfig {
         BackendConfig {
-            backend_id: id.to_string(),
+            backend: id.to_string(),
         }
     }
 
@@ -717,7 +731,7 @@ mod tests {
             custom_rules: vec![CustomRule {
                 name: "skip_puzzle15_hip".to_string(),
                 description: "Skip puzzle15 model on hip backend".to_string(),
-                condition: "model_name == 'rwkv_puzzle15' and backend_id == 'hip'".to_string(),
+                condition: "model_name == 'rwkv_puzzle15' and backend == 'hip'".to_string(),
             }],
             ..Default::default()
         };
@@ -878,7 +892,7 @@ mod tests {
             seq_len: None,
             decode_steps: None,
             model_name: "test_model",
-            backend_id: "wgpu",
+            backend: "wgpu/Vulkan",
         };
 
         assert!(evaluate_expression("batch_size == 4", &ctx));
@@ -895,12 +909,12 @@ mod tests {
             seq_len: None,
             decode_steps: None,
             model_name: "test_model",
-            backend_id: "wgpu",
+            backend: "wgpu/Vulkan",
         };
 
         assert!(!evaluate_expression("batch_size != 4", &ctx));
         assert!(evaluate_expression("batch_size != 5", &ctx));
-        assert!(evaluate_expression("backend_id != 'hip'", &ctx));
+        assert!(evaluate_expression("backend != 'hip'", &ctx));
     }
 
     #[test]
@@ -911,7 +925,7 @@ mod tests {
             seq_len: Some(512),
             decode_steps: None,
             model_name: "test_model",
-            backend_id: "wgpu",
+            backend: "wgpu/Vulkan",
         };
 
         assert!(evaluate_expression("batch_size >= 4", &ctx));
@@ -921,5 +935,44 @@ mod tests {
         assert!(evaluate_expression("batch_size <= 4", &ctx));
         assert!(evaluate_expression("batch_size <= 5", &ctx));
         assert!(!evaluate_expression("batch_size <= 3", &ctx));
+    }
+
+    #[test]
+    fn test_expression_starts_with() {
+        let ctx = RuleContext {
+            batch_size: 4,
+            token_chunk_size: 256,
+            seq_len: None,
+            decode_steps: None,
+            model_name: "test_model",
+            backend: "wgpu/Vulkan",
+        };
+
+        assert!(evaluate_expression("starts_with(backend, 'wgpu')", &ctx));
+        assert!(evaluate_expression("starts_with(backend, 'wgpu/')", &ctx));
+        assert!(!evaluate_expression("starts_with(backend, 'hip')", &ctx));
+        assert!(evaluate_expression("starts_with(model_name, 'test')", &ctx));
+    }
+
+    #[test]
+    fn test_expression_starts_with_combined() {
+        let ctx = RuleContext {
+            batch_size: 512,
+            token_chunk_size: 256,
+            seq_len: None,
+            decode_steps: None,
+            model_name: "test_model",
+            backend: "wgpu/Dx12",
+        };
+
+        // Combined with and
+        assert!(evaluate_expression(
+            "starts_with(backend, 'wgpu') and batch_size > 256",
+            &ctx
+        ));
+        assert!(!evaluate_expression(
+            "starts_with(backend, 'hip') and batch_size > 256",
+            &ctx
+        ));
     }
 }

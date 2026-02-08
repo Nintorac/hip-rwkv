@@ -157,11 +157,21 @@ fn default_repeats() -> u32 {
     5
 }
 
-fn wgpu_backend_label(backend_id: &str) -> &str {
-    if backend_id == "hip" {
-        "hip"
+/// Construct the unified backend string from a config BackendEntry.
+///
+/// For wgpu backends: "wgpu/Vulkan", "wgpu/Metal", "wgpu/Dx12"
+/// For hip: "hip"
+fn unified_backend_string(backend_entry: &BackendEntry) -> String {
+    if backend_entry.backend_id == "hip" {
+        "hip".to_string()
     } else {
-        "Vulkan"
+        // Default to first wgpu_backend variant, or "Vulkan" if none specified
+        let variant = backend_entry
+            .wgpu_backends
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("Vulkan");
+        format!("wgpu/{}", variant)
     }
 }
 
@@ -625,7 +635,7 @@ impl BenchCase {
     pub fn case_id(&self) -> String {
         let mut parts = vec![
             self.model.model_name.clone(),
-            self.backend.backend_id.clone(),
+            unified_backend_string(&self.backend),
             self.scenario.clone(),
             format!("b{}", self.batch_size),
             format!("c{}", self.token_chunk_size),
@@ -1482,11 +1492,11 @@ async fn bench_smoke_async() {
 
         // Generate case_id
         let effective_chunk_size = round_chunk_size(case.token_chunk_size);
+        let backend_str = unified_backend_string(&case.backend);
         let case_id_params = CaseIdParams {
             scenario: Scenario::DecodeOnly,
             model_id: &case.model.model_name,
-            backend_id: &case.backend.backend_id,
-            wgpu_backend: wgpu_backend_label(&case.backend.backend_id),
+            backend: &backend_str,
             batch_size: case.batch_size,
             token_chunk_size_effective: effective_chunk_size,
             decode_steps: Some(decode_steps),
@@ -1535,8 +1545,7 @@ async fn bench_smoke_async() {
                             model_path: case.model.path.clone(),
                             model_size: case.model.model_size.clone(),
                             rwkv_version: rwkv_version_str(loaded.info.version).to_string(),
-                            backend_id: case.backend.backend_id.clone(),
-                            wgpu_backend: wgpu_backend_label(&case.backend.backend_id).to_string(),
+                            backend: backend_str.clone(),
                             batch_size: case.batch_size,
                             token_chunk_size_requested: case.token_chunk_size,
                             token_chunk_size_effective: effective_chunk_size,
@@ -1676,11 +1685,11 @@ async fn bench_smoke_async() {
 
         // Generate case_id for prefill
         let effective_chunk_size = round_chunk_size(case.token_chunk_size);
+        let backend_str = unified_backend_string(&case.backend);
         let case_id_params = CaseIdParams {
             scenario: Scenario::PrefillUniform,
             model_id: &case.model.model_name,
-            backend_id: &case.backend.backend_id,
-            wgpu_backend: wgpu_backend_label(&case.backend.backend_id),
+            backend: &backend_str,
             batch_size: case.batch_size,
             token_chunk_size_effective: effective_chunk_size,
             decode_steps: None,
@@ -1729,8 +1738,7 @@ async fn bench_smoke_async() {
                             model_path: case.model.path.clone(),
                             model_size: case.model.model_size.clone(),
                             rwkv_version: rwkv_version_str(loaded.info.version).to_string(),
-                            backend_id: case.backend.backend_id.clone(),
-                            wgpu_backend: wgpu_backend_label(&case.backend.backend_id).to_string(),
+                            backend: backend_str.clone(),
                             batch_size: case.batch_size,
                             token_chunk_size_requested: case.token_chunk_size,
                             token_chunk_size_effective: effective_chunk_size,

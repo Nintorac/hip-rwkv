@@ -5,7 +5,7 @@
 # how to execute them, and how to write JSONL output.
 
 # Schema version - bump on breaking changes
-schema_version: 1
+schema_version: 2
 
 # =============================================================================
 # PROFILES
@@ -315,7 +315,6 @@ backends:
     skip: false
 
   - backend_id: "hip"
-    wgpu_backends: []  # Not applicable for hip
     adapter_selection: "auto_high_perf"
     skip: false
 
@@ -437,8 +436,8 @@ output:
   directory: "benchmarks/results"
 
   # File naming pattern
-  # Available placeholders: {profile}, {timestamp}, {git_sha}, {run_id}, {gpu}, {name}
-  filename_pattern: "{profile}_{gpu}_{name}.jsonl"
+  # Available placeholders: {profile}, {timestamp}, {git_sha}, {run_id}
+  filename_pattern: "bench_{profile}_{timestamp}.jsonl"
 
   # Whether to append to existing file or create new
   mode: "create_new"
@@ -478,11 +477,11 @@ skip_conditions:
 
     - name: "skip_puzzle15_hip"
       description: "Skip puzzle15 model on hip backend (custom ops not supported)"
-      condition: "model_name == 'rwkv_puzzle15' and backend_id == 'hip'"
+      condition: "model_name == 'rwkv_puzzle15' and backend == 'hip'"
 
     - name: "skip_wgpu_large_batch"
       description: "Skip large batch sizes on wgpu to avoid buffer size limits"
-      condition: "backend_id == 'wgpu' and batch_size > 256"
+      condition: "starts_with(backend, 'wgpu') and batch_size > 256"
 
 # =============================================================================
 # LIMITS

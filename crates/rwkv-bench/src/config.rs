@@ -34,7 +34,7 @@ pub struct SkipConditions {
 /// A custom skip rule with a name, description, and condition expression.
 ///
 /// Condition expressions support simple comparisons and logical operators:
-/// - Variables: `batch_size`, `seq_len`, `token_chunk_size`, `model_name`, `backend_id`
+/// - Variables: `batch_size`, `seq_len`, `token_chunk_size`, `model_name`, `backend`
 /// - Comparisons: `>`, `<`, `>=`, `<=`, `==`, `!=`
 /// - Logical operators: `and`, `or`, `not`
 /// - String matching: `==` for exact match
@@ -48,7 +48,7 @@ pub struct SkipConditions {
 ///
 /// - name: "skip_puzzle15_hip"
 ///   description: "Skip puzzle15 model on hip backend"
-///   condition: "model_name == 'rwkv_puzzle15' and backend_id == 'hip'"
+///   condition: "model_name == 'rwkv_puzzle15' and backend == 'hip'"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomRule {
@@ -132,8 +132,8 @@ pub struct ModelConfig {
 /// Backend configuration data needed for skip condition evaluation.
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
-    /// Backend identifier (e.g., "wgpu", "hip")
-    pub backend_id: String,
+    /// Unified backend string (e.g., "wgpu/Vulkan", "hip")
+    pub backend: String,
 }
 
 /// Benchmark case parameters needed for skip condition evaluation.

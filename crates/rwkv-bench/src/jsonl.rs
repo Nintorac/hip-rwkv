@@ -59,7 +59,7 @@ use crate::prefill_mixed::PrefillMixedResult;
 use crate::prefill_uniform::PrefillResult;
 
 /// Current schema version for JSONL output.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Error type for JSONL writer operations.
 #[derive(Debug)]
@@ -314,10 +314,8 @@ pub struct CaseIdentity {
     pub model_size: String,
     /// RWKV architecture version
     pub rwkv_version: String,
-    /// Backend identifier ("wgpu" or "hip")
-    pub backend_id: String,
-    /// Graphics API variant
-    pub wgpu_backend: String,
+    /// Unified backend string: "wgpu/Vulkan", "wgpu/Metal", "wgpu/Dx12", or "hip"
+    pub backend: String,
     /// Batch size for this case
     pub batch_size: u32,
     /// Requested token chunk size from config
@@ -407,8 +405,7 @@ struct MeasureRecordSerialized<'a> {
     model_path: &'a str,
     model_size: &'a str,
     rwkv_version: &'a str,
-    backend_id: &'a str,
-    wgpu_backend: &'a str,
+    backend: &'a str,
     batch_size: u32,
     token_chunk_size_requested: u32,
     token_chunk_size_effective: u32,
@@ -530,8 +527,7 @@ impl MeasureRecord {
             model_path: &self.case_identity.model_path,
             model_size: &self.case_identity.model_size,
             rwkv_version: &self.case_identity.rwkv_version,
-            backend_id: &self.case_identity.backend_id,
-            wgpu_backend: &self.case_identity.wgpu_backend,
+            backend: &self.case_identity.backend,
             batch_size: self.case_identity.batch_size,
             token_chunk_size_requested: self.case_identity.token_chunk_size_requested,
             token_chunk_size_effective: self.case_identity.token_chunk_size_effective,
@@ -570,10 +566,8 @@ pub struct CaseIdParams<'a> {
     pub scenario: Scenario,
     /// Model identifier or name
     pub model_id: &'a str,
-    /// Backend identifier
-    pub backend_id: &'a str,
-    /// WGPU backend variant
-    pub wgpu_backend: &'a str,
+    /// Unified backend string: "wgpu/Vulkan", "wgpu/Metal", "wgpu/Dx12", or "hip"
+    pub backend: &'a str,
     /// Batch size
     pub batch_size: u32,
     /// Effective token chunk size
@@ -588,7 +582,7 @@ pub struct CaseIdParams<'a> {
 
 /// Generate a human-readable case_id from normalized parameters.
 ///
-/// Format: `{scenario}:{model_short}:{backend_id}:{wgpu_backend}:bs{batch}:c{chunk}:{scenario_params}`
+/// Format: `{scenario}:{model_short}:{backend}:bs{batch}:c{chunk}:{scenario_params}`
 ///
 /// # Example
 ///
@@ -598,8 +592,7 @@ pub struct CaseIdParams<'a> {
 /// let params = CaseIdParams {
 ///     scenario: Scenario::DecodeOnly,
 ///     model_id: "rwkv7_0.1b",
-///     backend_id: "wgpu",
-///     wgpu_backend: "Vulkan",
+///     backend: "wgpu/Vulkan",
 ///     batch_size: 4,
 ///     token_chunk_size_effective: 2048,
 ///     decode_steps: Some(100),
@@ -608,14 +601,13 @@ pub struct CaseIdParams<'a> {
 /// };
 ///
 /// let case_id = generate_case_id(&params);
-/// assert_eq!(case_id, "decode_only:rwkv7_0.1b:wgpu:Vulkan:bs4:c2048:steps100");
+/// assert_eq!(case_id, "decode_only:rwkv7_0.1b:wgpu/Vulkan:bs4:c2048:steps100");
 /// ```
 pub fn generate_case_id(params: &CaseIdParams) -> String {
     let mut parts = vec![
         params.scenario.as_str().to_string(),
         params.model_id.to_string(),
-        params.backend_id.to_string(),
-        params.wgpu_backend.to_string(),
+        params.backend.to_string(),
         format!("bs{}", params.batch_size),
         format!("c{}", params.token_chunk_size_effective),
     ];
@@ -906,8 +898,7 @@ mod tests {
         let params = CaseIdParams {
             scenario: Scenario::DecodeOnly,
             model_id: "rwkv7_0.1b",
-            backend_id: "wgpu",
-            wgpu_backend: "Vulkan",
+            backend: "wgpu/Vulkan",
             batch_size: 4,
             token_chunk_size_effective: 2048,
             decode_steps: Some(100),
@@ -918,7 +909,7 @@ mod tests {
         let case_id = generate_case_id(&params);
         assert_eq!(
             case_id,
-            "decode_only:rwkv7_0.1b:wgpu:Vulkan:bs4:c2048:steps100"
+            "decode_only:rwkv7_0.1b:wgpu/Vulkan:bs4:c2048:steps100"
         );
     }
 
@@ -927,8 +918,7 @@ mod tests {
         let params = CaseIdParams {
             scenario: Scenario::PrefillUniform,
             model_id: "rwkv7_0.1b",
-            backend_id: "wgpu",
-            wgpu_backend: "Vulkan",
+            backend: "wgpu/Vulkan",
             batch_size: 4,
             token_chunk_size_effective: 2048,
             decode_steps: None,
@@ -939,7 +929,7 @@ mod tests {
         let case_id = generate_case_id(&params);
         assert_eq!(
             case_id,
-            "prefill_uniform:rwkv7_0.1b:wgpu:Vulkan:bs4:c2048:len512"
+            "prefill_uniform:rwkv7_0.1b:wgpu/Vulkan:bs4:c2048:len512"
         );
     }
 
@@ -948,8 +938,7 @@ mod tests {
         let params = CaseIdParams {
             scenario: Scenario::PrefillMixed,
             model_id: "rwkv7_0.1b",
-            backend_id: "wgpu",
-            wgpu_backend: "Vulkan",
+            backend: "wgpu/Vulkan",
             batch_size: 8,
             token_chunk_size_effective: 256,
             decode_steps: None,
@@ -960,7 +949,7 @@ mod tests {
         let case_id = generate_case_id(&params);
         assert_eq!(
             case_id,
-            "prefill_mixed:rwkv7_0.1b:wgpu:Vulkan:bs8:c256:staircase_8"
+            "prefill_mixed:rwkv7_0.1b:wgpu/Vulkan:bs8:c256:staircase_8"
         );
     }
 
@@ -1030,7 +1019,7 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         let record: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(record["type"], "run");
-        assert_eq!(record["schema_version"], 1);
+        assert_eq!(record["schema_version"], SCHEMA_VERSION);
         assert_eq!(record["run_id"], "test_run_123");
         assert_eq!(record["host"]["os"], "linux");
         assert_eq!(record["gpu"]["adapter_name"], "Test GPU");
@@ -1083,8 +1072,7 @@ mod tests {
                     model_path: "path/to/model.st".to_string(),
                     model_size: "9m".to_string(),
                     rwkv_version: "v7".to_string(),
-                    backend_id: "wgpu".to_string(),
-                    wgpu_backend: "Vulkan".to_string(),
+                    backend: "wgpu/Vulkan".to_string(),
                     batch_size: 4,
                     token_chunk_size_requested: 128,
                     token_chunk_size_effective: 128,
@@ -1113,7 +1101,7 @@ mod tests {
         // Verify measure record
         let measure: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
         assert_eq!(measure["type"], "measure");
-        assert_eq!(measure["schema_version"], 1);
+        assert_eq!(measure["schema_version"], SCHEMA_VERSION);
         assert_eq!(measure["scenario"], "decode_only");
         assert_eq!(measure["status"], "ok");
         assert_eq!(measure["batch_size"], 4);
@@ -1145,8 +1133,7 @@ mod tests {
                     model_path: "path/to/model.st".to_string(),
                     model_size: "9m".to_string(),
                     rwkv_version: "v7".to_string(),
-                    backend_id: "wgpu".to_string(),
-                    wgpu_backend: "Vulkan".to_string(),
+                    backend: "wgpu/Vulkan".to_string(),
                     batch_size: 64,
                     token_chunk_size_requested: 128,
                     token_chunk_size_effective: 128,
@@ -1191,8 +1178,7 @@ mod tests {
                     model_path: "path/to/model.st".to_string(),
                     model_size: "9m".to_string(),
                     rwkv_version: "v7".to_string(),
-                    backend_id: "wgpu".to_string(),
-                    wgpu_backend: "Vulkan".to_string(),
+                    backend: "wgpu/Vulkan".to_string(),
                     batch_size: 4,
                     token_chunk_size_requested: 256,
                     token_chunk_size_effective: 256,
@@ -1269,8 +1255,7 @@ mod tests {
                 model_path: "path".to_string(),
                 model_size: "9m".to_string(),
                 rwkv_version: "v7".to_string(),
-                backend_id: "wgpu".to_string(),
-                wgpu_backend: "Vulkan".to_string(),
+                backend: "wgpu/Vulkan".to_string(),
                 batch_size: 1,
                 token_chunk_size_requested: 128,
                 token_chunk_size_effective: 128,
