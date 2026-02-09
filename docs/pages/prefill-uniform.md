@@ -5,121 +5,167 @@ title: Prefill Uniform Benchmarks
 # Prefill Uniform Benchmarks
 
 ```sql runs
-SELECT DISTINCT run_id, human_name
+SELECT DISTINCT run_id, human_name || ' (' || started_at_utc || ')' AS run_label
 FROM bench.prefill_uniform
-ORDER BY human_name
+ORDER BY started_at_utc DESC
 ```
 
-```sql models
-SELECT DISTINCT model_name
+<Dropdown data={runs} name=run_filter value=run_id label=run_label title="Run" multiple=true selectAllByDefault=true />
+
+```sql prefill_0_1b
+SELECT batch_size, backend, AVG(prefill_tok_per_s) AS avg_tok_s, AVG(prefill_total_ms) AS avg_total_ms, AVG(ttft_p50_ms) AS avg_ttft
 FROM bench.prefill_uniform
-ORDER BY model_name
+WHERE model_name = 'rwkv7_g1a_0.1b' AND run_id IN ${inputs.run_filter.value}
+GROUP BY batch_size, backend
+ORDER BY batch_size
 ```
 
-```sql backends
-SELECT DISTINCT backend
+```sql prefill_2_9b
+SELECT batch_size, backend, AVG(prefill_tok_per_s) AS avg_tok_s, AVG(prefill_total_ms) AS avg_total_ms, AVG(ttft_p50_ms) AS avg_ttft
 FROM bench.prefill_uniform
-ORDER BY backend
+WHERE model_name = 'rwkv7_g1c_2.9b' AND run_id IN ${inputs.run_filter.value}
+GROUP BY batch_size, backend
+ORDER BY batch_size
 ```
 
-<Dropdown data={runs} name=run_filter value=run_id label=human_name title="Run" multiple=true selectAllByDefault=true />
-<Dropdown data={models} name=model_filter value=model_name title="Model" multiple=true selectAllByDefault=true />
-<Dropdown data={backends} name=backend_filter value=backend title="Backend" multiple=true selectAllByDefault=true />
+## Throughput by Batch Size
 
-```sql filtered
-SELECT *
-FROM bench.prefill_uniform
-WHERE run_id IN ${inputs.run_filter.value}
-  AND model_name IN ${inputs.model_filter.value}
-  AND backend IN ${inputs.backend_filter.value}
-```
+<Grid cols=2>
+<div>
 
-```sql summary
-SELECT
-    COUNT(*) AS total_cases,
-    MEDIAN(prefill_tok_per_s) AS median_tok_per_s,
-    MAX(prefill_tok_per_s) AS best_tok_per_s
-FROM ${filtered}
-```
-
-<BigValue data={summary} value=total_cases title="Total Cases" fmt="#,##0" />
-<BigValue data={summary} value=median_tok_per_s title="Median tok/s" fmt="#,##0" />
-<BigValue data={summary} value=best_tok_per_s title="Best tok/s" fmt="#,##0" />
-
-```sql throughput_by_seq_len
-SELECT
-    seq_len,
-    backend,
-    AVG(prefill_tok_per_s) AS avg_tok_per_s
-FROM ${filtered}
-GROUP BY seq_len, backend
-ORDER BY seq_len
-```
-
-<BarChart
-    data={throughput_by_seq_len}
-    x=seq_len
-    y=avg_tok_per_s
-    series=backend
-    title="Avg Prefill Throughput by Sequence Length"
-    yAxisTitle="tok/s"
-/>
-
-```sql ttft_by_seq_len
-SELECT
-    seq_len,
-    backend,
-    AVG(ttft_p50_ms) AS avg_ttft_p50_ms
-FROM ${filtered}
-GROUP BY seq_len, backend
-ORDER BY seq_len
-```
+### 0.1b
 
 <LineChart
-    data={ttft_by_seq_len}
-    x=seq_len
-    y=avg_ttft_p50_ms
+    data={prefill_0_1b}
+    x=batch_size
+    y=avg_tok_s
     series=backend
-    title="Avg TTFT (p50) by Sequence Length"
-    yAxisTitle="ms"
+    title="rwkv7_g1a_0.1b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="tok/s"
+    yFmt="#,##0"
+    markers=true
+    labels=true
 />
 
-```sql table_data
-SELECT
-    run_id,
-    human_name,
-    model_name,
-    backend,
-    batch_size,
-    token_chunk_size,
-    seq_len,
-    prefill_total_ms,
-    total_prompt_tokens,
-    prefill_tok_per_s,
-    num_infer_calls,
-    ttft_min_ms,
-    ttft_p50_ms,
-    ttft_max_ms,
-    gpu_short,
-    git_sha
-FROM ${filtered}
-ORDER BY human_name, model_name, backend, seq_len
+</div>
+<div>
+
+### 2.9b
+
+<LineChart
+    data={prefill_2_9b}
+    x=batch_size
+    y=avg_tok_s
+    series=backend
+    title="rwkv7_g1c_2.9b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="tok/s"
+    yFmt="#,##0"
+    markers=true
+    labels=true
+/>
+
+</div>
+</Grid>
+
+## TTFT by Batch Size
+
+<Grid cols=2>
+<div>
+
+### 0.1b
+
+<LineChart
+    data={prefill_0_1b}
+    x=batch_size
+    y=avg_ttft
+    series=backend
+    title="rwkv7_g1a_0.1b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="TTFT (ms)"
+    yFmt="#,##0.1"
+    markers=true
+    labels=true
+/>
+
+</div>
+<div>
+
+### 2.9b
+
+<LineChart
+    data={prefill_2_9b}
+    x=batch_size
+    y=avg_ttft
+    series=backend
+    title="rwkv7_g1c_2.9b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="TTFT (ms)"
+    yFmt="#,##0.1"
+    markers=true
+    labels=true
+/>
+
+</div>
+</Grid>
+
+## Total Time by Batch Size
+
+<Grid cols=2>
+<div>
+
+### 0.1b
+
+<LineChart
+    data={prefill_0_1b}
+    x=batch_size
+    y=avg_total_ms
+    series=backend
+    title="rwkv7_g1a_0.1b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="Total Time (ms)"
+    yFmt="#,##0.1"
+    markers=true
+    labels=true
+/>
+
+</div>
+<div>
+
+### 2.9b
+
+<LineChart
+    data={prefill_2_9b}
+    x=batch_size
+    y=avg_total_ms
+    series=backend
+    title="rwkv7_g1c_2.9b"
+    xAxisTitle="Batch Size"
+    yAxisTitle="Total Time (ms)"
+    yFmt="#,##0.1"
+    markers=true
+    labels=true
+/>
+
+</div>
+</Grid>
+
+## Data
+
+```sql all_data
+SELECT model_name, backend, batch_size, prefill_tok_per_s, prefill_total_ms, ttft_p50_ms, gpu_short
+FROM bench.prefill_uniform
+WHERE run_id IN ${inputs.run_filter.value}
+ORDER BY model_name, backend, batch_size
 ```
 
-<DataTable data={table_data} rows=50>
-    <Column id=human_name title="Run" />
+<DataTable data={all_data} rows=50>
     <Column id=model_name title="Model" />
     <Column id=backend title="Backend" />
-    <Column id=batch_size title="Batch" fmt="#,##0" />
-    <Column id=token_chunk_size title="Chunk" fmt="#,##0" />
-    <Column id=seq_len title="Seq Len" fmt="#,##0" />
+    <Column id=batch_size title="Batch Size" fmt="#,##0" />
+    <Column id=prefill_tok_per_s title="tok/s" fmt="#,##0" contentType=colorscale colorScale=positive />
     <Column id=prefill_total_ms title="Prefill (ms)" fmt="#,##0.1" />
-    <Column id=total_prompt_tokens title="Tokens" fmt="#,##0" />
-    <Column id=prefill_tok_per_s title="tok/s" fmt="#,##0" />
-    <Column id=num_infer_calls title="Infer Calls" fmt="#,##0" />
-    <Column id=ttft_min_ms title="TTFT Min (ms)" fmt="#,##0.1" />
     <Column id=ttft_p50_ms title="TTFT p50 (ms)" fmt="#,##0.1" />
-    <Column id=ttft_max_ms title="TTFT Max (ms)" fmt="#,##0.1" />
     <Column id=gpu_short title="GPU" />
-    <Column id=git_sha title="Git SHA" />
 </DataTable>

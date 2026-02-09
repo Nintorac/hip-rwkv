@@ -51,15 +51,18 @@ use web_rwkv::{
     },
 };
 
+use rwkv_bench::db::{
+    CaseRow, DbWriter, DecodeRow, ExpandedCaseInput, ModelRow, PrefillMixedRow, PrefillUniformRow,
+    RunRow, SqlSkipConditions,
+};
 use rwkv_bench::{
     all_mixed_case_ids, collect_run_metadata, generate_case_id, generate_human_name,
     generate_lengths_from_str, generate_run_id, generate_timestamp_utc, round_chunk_size,
     shorten_gpu, CaseIdParams, CaseIdentity, DecodeConfig, DecodeResults, JsonlGpuInfo,
-    JsonlHostInfo as HostInfo, JsonlWriter, MeasureRecord, Metrics, PrefillMetrics,
-    PrefillMixedResult, PrefillResult, PrefillUniformConfig, RunHeader, Scenario, ScenarioParams,
-    Status, TokenGenerator,
+    JsonlHostInfo as HostInfo, JsonlWriter, MeasureRecord, Metrics, MixedTtftTracker,
+    PrefillMetrics, PrefillMixedResult, PrefillResult, PrefillUniformConfig, RunHeader, Scenario,
+    ScenarioParams, Status, TokenGenerator,
 };
-use rwkv_bench::db::{CaseRow, DbWriter, DecodeRow, ExpandedCaseInput, ModelRow, PrefillMixedRow, PrefillUniformRow, RunRow, SqlSkipConditions};
 
 /// Default config file path
 const DEFAULT_CONFIG_PATH: &str = "benchmarks/config.yaml";
@@ -754,8 +757,8 @@ async fn create_context(info: &ModelInfo) -> anyhow::Result<Context> {
 fn load_hip_weights(model_path: &str) -> anyhow::Result<HipWeights> {
     use hip_rwkv::hip::Rwkv7Hip;
 
-    let model = Rwkv7Hip::load(model_path)
-        .map_err(|e| anyhow::anyhow!("HIP model load failed: {e:?}"))?;
+    let model =
+        Rwkv7Hip::load(model_path).map_err(|e| anyhow::anyhow!("HIP model load failed: {e:?}"))?;
     let weights = model.model();
 
     let file = std::fs::File::open(model_path)?;
@@ -764,7 +767,11 @@ fn load_hip_weights(model_path: &str) -> anyhow::Result<HipWeights> {
     let info = Loader::info(&st)?;
     let vocab_size = info.num_vocab as u32;
 
-    Ok(HipWeights { weights, info, vocab_size })
+    Ok(HipWeights {
+        weights,
+        info,
+        vocab_size,
+    })
 }
 
 /// Create a HIP runtime from persistent weights (cheap, just allocates scratch buffers).
@@ -775,7 +782,11 @@ fn create_hip_runtime(
 ) -> anyhow::Result<LoadedModel> {
     use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig};
 
-    let chunk = if token_chunk_size == 0 { 1 } else { token_chunk_size };
+    let chunk = if token_chunk_size == 0 {
+        1
+    } else {
+        token_chunk_size
+    };
     let config = HipRuntimeConfig::new(chunk, batch_size);
     let runtime = HipRuntime::from_model_arc(hip_weights.weights.clone(), config)
         .map_err(|e| anyhow::anyhow!("HIP runtime init failed: {e:?}"))?;
@@ -853,8 +864,8 @@ async fn run_decode_benchmark(
     warmup_runs: u32,
     repeats: u32,
 ) -> anyhow::Result<DecodeResults> {
-    use std::time::{Duration, Instant};
     use rwkv_bench::{DecodeRepeatResult, TokenRng};
+    use std::time::{Duration, Instant};
 
     let vocab_size = loaded.vocab_size;
     let runtime = &loaded.runtime;
@@ -1124,11 +1135,19 @@ async fn run_prefill_mixed_benchmark(
     warmup_runs: u32,
     repeats: u32,
 ) -> anyhow::Result<PrefillMixedBenchResults> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let vocab_size = loaded.vocab_size;
     let runtime = &loaded.runtime;
     let settle_ms = 50u64;
+
+    if seq_lens.len() != batch_size as usize {
+        return Err(anyhow::anyhow!(
+            "mixed prefill length count ({}) does not match batch size ({})",
+            seq_lens.len(),
+            batch_size
+        ));
+    }
 
     let mut results = Vec::with_capacity(repeats as usize);
 
@@ -1170,35 +1189,24 @@ async fn run_prefill_mixed_benchmark(
             .collect();
 
         let mut input = RnnInput::new(batches, token_chunk_size);
+        let mut ttft_tracker = MixedTtftTracker::new(seq_lens.to_vec());
+        ttft_tracker.start();
 
-        // Timed prefill: loop over all chunks until input is exhausted
-        let mut num_infer_calls = 0u32;
-        let start = Instant::now();
+        // Timed prefill: track per-batch first-output time from each chunk's RnnInfo.
         while input.num_token() > 0 {
+            let info = input
+                .iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("mixed prefill input unexpectedly exhausted"))?;
             let (remaining, _) = runtime
                 .infer(input)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+            ttft_tracker.record_infer(|i| info.get(i).map(|b| b.option.is_some()).unwrap_or(false));
             input = remaining;
-            num_infer_calls += 1;
         }
-        let elapsed = start.elapsed();
 
-        let prefill_total_ms = elapsed.as_secs_f64() * 1000.0;
-        let total_prompt_tokens: u32 = seq_lens.iter().sum();
-        let _prefill_tok_per_s = total_prompt_tokens as f64 / elapsed.as_secs_f64();
-
-        // For mixed prefill, approximate TTFT: all batches complete at max time
-        // (precise per-batch TTFT tracking would require runtime API changes)
-        let ttft_ms_local = vec![prefill_total_ms; batch_size as usize];
-
-        let result = PrefillMixedResult::from_ttft(
-            ttft_ms_local,
-            seq_lens,
-            num_infer_calls,
-        );
-
-        results.push(result);
+        results.push(ttft_tracker.finalize());
     }
 
     // Calculate aggregate statistics
@@ -1331,7 +1339,10 @@ async fn bench_smoke_async() {
         }
     };
 
-    println!("\n[bench] Expanded {} total cases (before filtering)", cases.len());
+    println!(
+        "\n[bench] Expanded {} total cases (before filtering)",
+        cases.len()
+    );
 
     // Create output directory
     let output_dir = Path::new(&config.output.directory);
@@ -1391,42 +1402,60 @@ async fn bench_smoke_async() {
         match db.query_cases(&case_inputs, &sql_skip) {
             Ok(rows) => rows,
             Err(e) => {
-                eprintln!("[bench] WARNING: query_cases failed: {}. Using unfiltered cases.", e);
-                case_inputs.iter().map(|c| CaseRow {
-                    scenario: c.scenario.clone(),
-                    model_name: c.model_name.clone(),
-                    model_sha: c.model_sha.clone(),
-                    backend: c.backend.clone(),
-                    batch_size: c.batch_size,
-                    token_chunk_size: c.token_chunk_size,
-                    seq_len: c.seq_len,
-                    decode_steps: c.decode_steps,
-                    max_batch_size: c.max_batch_size,
-                    max_token_chunk_size: c.max_token_chunk_size,
-                    mixed_case_id: c.mixed_case_id.clone(),
-                }).collect()
+                eprintln!(
+                    "[bench] WARNING: query_cases failed: {}. Using unfiltered cases.",
+                    e
+                );
+                case_inputs
+                    .iter()
+                    .map(|c| CaseRow {
+                        scenario: c.scenario.clone(),
+                        model_name: c.model_name.clone(),
+                        model_sha: c.model_sha.clone(),
+                        backend: c.backend.clone(),
+                        batch_size: c.batch_size,
+                        token_chunk_size: c.token_chunk_size,
+                        seq_len: c.seq_len,
+                        decode_steps: c.decode_steps,
+                        max_batch_size: c.max_batch_size,
+                        max_token_chunk_size: c.max_token_chunk_size,
+                        mixed_case_id: c.mixed_case_id.clone(),
+                    })
+                    .collect()
             }
         }
     } else {
         // No DB -- just convert inputs to CaseRow
-        case_inputs.iter().map(|c| CaseRow {
-            scenario: c.scenario.clone(),
-            model_name: c.model_name.clone(),
-            model_sha: c.model_sha.clone(),
-            backend: c.backend.clone(),
-            batch_size: c.batch_size,
-            token_chunk_size: c.token_chunk_size,
-            seq_len: c.seq_len,
-            decode_steps: c.decode_steps,
-            max_batch_size: c.max_batch_size,
-            max_token_chunk_size: c.max_token_chunk_size,
-            mixed_case_id: c.mixed_case_id.clone(),
-        }).collect()
+        case_inputs
+            .iter()
+            .map(|c| CaseRow {
+                scenario: c.scenario.clone(),
+                model_name: c.model_name.clone(),
+                model_sha: c.model_sha.clone(),
+                backend: c.backend.clone(),
+                batch_size: c.batch_size,
+                token_chunk_size: c.token_chunk_size,
+                seq_len: c.seq_len,
+                decode_steps: c.decode_steps,
+                max_batch_size: c.max_batch_size,
+                max_token_chunk_size: c.max_token_chunk_size,
+                mixed_case_id: c.mixed_case_id.clone(),
+            })
+            .collect()
     };
 
-    let decode_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "decode_only").collect();
-    let prefill_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "prefill_uniform").collect();
-    let mixed_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "prefill_mixed").collect();
+    let decode_rows: Vec<_> = filtered_cases
+        .iter()
+        .filter(|c| c.scenario == "decode_only")
+        .collect();
+    let prefill_rows: Vec<_> = filtered_cases
+        .iter()
+        .filter(|c| c.scenario == "prefill_uniform")
+        .collect();
+    let mixed_rows: Vec<_> = filtered_cases
+        .iter()
+        .filter(|c| c.scenario == "prefill_mixed")
+        .collect();
 
     println!("\n[bench] After filtering: {} cases", filtered_cases.len());
     println!("[bench]   decode_only: {}", decode_rows.len());
@@ -1443,13 +1472,7 @@ async fn bench_smoke_async() {
     let human_name = generate_human_name(&run_id);
     let timestamp = generate_timestamp_utc();
     let metadata = collect_run_metadata(None);
-    let gpu_short = shorten_gpu(
-        metadata
-            .host
-            .cpu
-            .as_deref()
-            .unwrap_or("unknown"),
-    );
+    let gpu_short = shorten_gpu(metadata.host.cpu.as_deref().unwrap_or("unknown"));
 
     let output_filename = config
         .output
@@ -1535,11 +1558,7 @@ async fn bench_smoke_async() {
             profile: profile_name.clone(),
             gpu_short: gpu_short.clone(),
             started_at_utc: timestamp.clone(),
-            git_sha: metadata
-                .git
-                .sha
-                .clone()
-                .unwrap_or_else(|| "unknown".into()),
+            git_sha: metadata.git.sha.clone().unwrap_or_else(|| "unknown".into()),
             git_dirty: metadata.git.dirty.unwrap_or(true),
             crate_version: metadata
                 .build
@@ -1585,7 +1604,11 @@ async fn bench_smoke_async() {
         };
 
         // Resolve model entry from config
-        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+        let model = match config
+            .models
+            .iter()
+            .find(|m| m.model_name == row.model_name)
+        {
             Some(m) => m,
             None => {
                 eprintln!("[bench] Model not found in config: {}", row.model_name);
@@ -1595,7 +1618,11 @@ async fn bench_smoke_async() {
         };
 
         // Resolve backend entry from config
-        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+        let backend = match config
+            .backends
+            .iter()
+            .find(|b| unified_backend_string(b) == row.backend)
+        {
             Some(b) => b,
             None => {
                 eprintln!("[bench] Backend not found in config: {}", row.backend);
@@ -1642,7 +1669,10 @@ async fn bench_smoke_async() {
                 // Recreate runtime (cheap) for new batch/chunk config
                 let hw = match &hip_weights {
                     Some(hw) => hw,
-                    None => { total_errors += 1; continue; }
+                    None => {
+                        total_errors += 1;
+                        continue;
+                    }
                 };
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
@@ -1832,7 +1862,11 @@ async fn bench_smoke_async() {
         };
 
         // Resolve model entry from config
-        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+        let model = match config
+            .models
+            .iter()
+            .find(|m| m.model_name == row.model_name)
+        {
             Some(m) => m,
             None => {
                 eprintln!("[bench] Model not found in config: {}", row.model_name);
@@ -1842,7 +1876,11 @@ async fn bench_smoke_async() {
         };
 
         // Resolve backend entry from config
-        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+        let backend = match config
+            .backends
+            .iter()
+            .find(|b| unified_backend_string(b) == row.backend)
+        {
             Some(b) => b,
             None => {
                 eprintln!("[bench] Backend not found in config: {}", row.backend);
@@ -1889,7 +1927,10 @@ async fn bench_smoke_async() {
                 // Recreate runtime (cheap) for new batch/chunk config
                 let hw = match &hip_weights {
                     Some(hw) => hw,
-                    None => { total_errors += 1; continue; }
+                    None => {
+                        total_errors += 1;
+                        continue;
+                    }
                 };
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
@@ -2088,7 +2129,11 @@ async fn bench_smoke_async() {
 
     for row in &mixed_rows {
         // Resolve model entry from config
-        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+        let model = match config
+            .models
+            .iter()
+            .find(|m| m.model_name == row.model_name)
+        {
             Some(m) => m,
             None => {
                 eprintln!("[bench] Model not found in config: {}", row.model_name);
@@ -2098,7 +2143,11 @@ async fn bench_smoke_async() {
         };
 
         // Resolve backend entry from config
-        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+        let backend = match config
+            .backends
+            .iter()
+            .find(|b| unified_backend_string(b) == row.backend)
+        {
             Some(b) => b,
             None => {
                 eprintln!("[bench] Backend not found in config: {}", row.backend);
@@ -2143,7 +2192,10 @@ async fn bench_smoke_async() {
                 }
                 let hw = match &hip_weights {
                     Some(hw) => hw,
-                    None => { total_errors += 1; continue; }
+                    None => {
+                        total_errors += 1;
+                        continue;
+                    }
                 };
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
@@ -2212,14 +2264,18 @@ async fn bench_smoke_async() {
         // Run each mixed_case_id pattern for this (model, backend, batch_size, chunk_size)
         for mixed_case_id in &mixed_case_ids {
             // Generate per-batch sequence lengths from the mixed pattern
-            let seq_lens = match generate_lengths_from_str(mixed_case_id, batch_size, token_chunk_size) {
-                Ok(lens) => lens,
-                Err(e) => {
-                    eprintln!("[bench] Failed to generate mixed lengths for {}: {}", mixed_case_id, e);
-                    total_errors += 1;
-                    continue;
-                }
-            };
+            let seq_lens =
+                match generate_lengths_from_str(mixed_case_id, batch_size, token_chunk_size) {
+                    Ok(lens) => lens,
+                    Err(e) => {
+                        eprintln!(
+                            "[bench] Failed to generate mixed lengths for {}: {}",
+                            mixed_case_id, e
+                        );
+                        total_errors += 1;
+                        continue;
+                    }
+                };
 
             // Generate case_id for mixed prefill
             let case_id_params = CaseIdParams {
@@ -2565,19 +2621,53 @@ fn test_query_cases_skip_conditions() {
         .collect();
     println!("Surviving cases: {:?}", names);
 
-    assert_eq!(result.len(), 4, "Expected 4 cases after filtering, got {}: {:?}", result.len(), names);
+    assert_eq!(
+        result.len(),
+        4,
+        "Expected 4 cases after filtering, got {}: {:?}",
+        result.len(),
+        names
+    );
 
     // Verify specific cases survived
-    assert!(result.iter().any(|r| r.model_name == "model_a" && r.backend == "hip" && r.batch_size == 16));
-    assert!(result.iter().any(|r| r.model_name == "model_a" && r.backend == "wgpu/Vulkan" && r.batch_size == 16));
-    assert!(result.iter().any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "wgpu/Vulkan"));
-    assert!(result.iter().any(|r| r.model_name == "model_b" && r.batch_size == 8));
+    assert!(result
+        .iter()
+        .any(|r| r.model_name == "model_a" && r.backend == "hip" && r.batch_size == 16));
+    assert!(result
+        .iter()
+        .any(|r| r.model_name == "model_a" && r.backend == "wgpu/Vulkan" && r.batch_size == 16));
+    assert!(result
+        .iter()
+        .any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "wgpu/Vulkan"));
+    assert!(result
+        .iter()
+        .any(|r| r.model_name == "model_b" && r.batch_size == 8));
 
     // Verify specific cases were filtered
-    assert!(!result.iter().any(|r| r.model_name == "model_a" && r.batch_size == 64), "batch=64 should be skipped (exceeds max)");
-    assert!(!result.iter().any(|r| r.model_name == "model_a" && r.batch_size == 512), "batch=512 should be skipped");
-    assert!(!result.iter().any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "hip"), "puzzle15/hip should be skipped");
-    assert!(!result.iter().any(|r| r.model_name == "model_b" && r.batch_size == 32), "batch=32 + seq=2048 should be skipped");
+    assert!(
+        !result
+            .iter()
+            .any(|r| r.model_name == "model_a" && r.batch_size == 64),
+        "batch=64 should be skipped (exceeds max)"
+    );
+    assert!(
+        !result
+            .iter()
+            .any(|r| r.model_name == "model_a" && r.batch_size == 512),
+        "batch=512 should be skipped"
+    );
+    assert!(
+        !result
+            .iter()
+            .any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "hip"),
+        "puzzle15/hip should be skipped"
+    );
+    assert!(
+        !result
+            .iter()
+            .any(|r| r.model_name == "model_b" && r.batch_size == 32),
+        "batch=32 + seq=2048 should be skipped"
+    );
 
     // Cleanup
     let _ = fs::remove_file(&tmp);

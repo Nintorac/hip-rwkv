@@ -49,6 +49,25 @@ profiles:
     warmup_runs: 0
     repeats: 1
 
+  quick_coverage:
+    description: "Quick coverage profile (~3-6 min). Good dashboard axes with limited runtime."
+    models:
+      - rwkv7_g1a_0.1b
+    backends:
+      - hip
+      - wgpu
+    scenarios:
+      - decode_only
+      - prefill_uniform
+      - prefill_mixed
+    batch_sizes: [8, 16]
+    token_chunk_sizes: [32, 64]
+    decode_steps: [64]
+    # NOTE: runner currently filters prefill cases to seq_len == token_chunk_size.
+    seq_lens: [32, 64]
+    warmup_runs: 0
+    repeats: 1
+
   decode_batch_sweep:
     description: "Decode-only batch sweep (fast). Single-step decode across large batch sizes."
     models:
