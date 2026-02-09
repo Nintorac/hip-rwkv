@@ -1,44 +1,46 @@
-# Dashboard Overhaul: Observable Framework + DuckDB
+# Dashboard Overhaul: Evidence + DuckDB
 
 ## Context
 
 The current benchmark dashboard is a monolithic static HTML/JS/CSS bundle (`benches/dashboard/`) with a 4300-line `app.js` using raw D3.js. It requires a manually-generated `index.json` manifest, has 5 overly-complex visualization views, and no integration with the docs site. The benchmark runner writes JSONL files with opaque timestamp-based names.
 
 This overhaul replaces it with:
-- **DuckDB** as the benchmark results store (Rust writes, Observable reads directly)
-- **Observable Framework** for the dashboard site in `docs/`
+- **DuckDB** as the benchmark results store (Rust writes, Evidence reads natively)
+- **Evidence** (evidence.dev) for the dashboard site in `docs/` — SQL-first BI framework with built-in interactive components
 - **Human-readable run names** generated in Rust (`words · profile · gpu`)
-- **3 simplified dashboard pages** (Runs, Detail, Compare)
-- **GitHub Pages** deployment via the `docs/` directory
+- **3 pages** — one per benchmark type (decode, prefill_uniform, prefill_mixed)
+- **GitHub Pages** deployment via static build
 
 ## Architecture
 
 ```
-Benchmark Run (Rust)                      Dashboard (Observable Framework)
-====================                      ================================
-web-rwkv-bench crate                      docs/
+Benchmark Run (Rust)                      Dashboard (Evidence)
+====================                      ====================
+rwkv-bench crate                          docs/
   |                                         |
-  | duckdb crate                            |
-  | STORAGE_VERSION 'v1.0.0'                |
+  | duckdb crate                            | @evidence-dev/duckdb
+  | STORAGE_VERSION 'v1.0.0'               |
   v                                         v
-benchmarks/results.db  --promote-->  docs/benchmarks/results.db (git-lfs)
-  (dev, gitignored)                    |
-                                       v
-                                  DuckDBClient.of({base: FileAttachment(...)})
-                                       |
-                                       v
-                                  SQL code blocks + Observable Plot
-                                       |
-                                       v
-                                  Static site --> GitHub Pages
+benchmarks/results/results.db  --copy-->  docs/sources/bench/results.db
+  (dev, gitignored)                         |
+                                            v
+                                      Source queries (.sql files)
+                                            |
+                                            v
+                                      Markdown pages + Evidence components
+                                      (BarChart, DataTable, Dropdown, BigValue)
+                                            |
+                                            v
+                                      Static site --> GitHub Pages
 ```
 
-### Dev vs Prod databases
+### Data flow
 
-- **Dev**: `benchmarks/results.db` — gitignored, written to by default during benchmarks
-- **Prod**: `docs/benchmarks/results.db` — git-lfs tracked, serves the published dashboard
-- `make bench-promote` copies dev → prod, **requires clean git** (enforced by the Makefile target)
-- The benchmark runner also writes JSONL files as secondary output: `{profile}_{gpu}_{name}.jsonl`
+- Benchmark runner writes to `benchmarks/results/results.db` (dev DB, gitignored)
+- `make dashboard` copies DB into `docs/sources/bench/results.db` then starts Evidence dev server
+- Evidence source queries (`.sql` files) JOIN scenario tables with `models` and `runs`, cached as Parquet
+- Markdown page queries run against the cache using DuckDB dialect
+- `evidence build` generates static site with data baked in
 
 ## DuckDB Schema
 
@@ -147,120 +149,103 @@ CREATE TABLE IF NOT EXISTS prefill_mixed (
 );
 ```
 
+## Evidence Dashboard Structure
+
+```
+docs/
+├── package.json                          @evidence-dev/evidence, core-components, duckdb
+├── evidence.config.yaml                  DuckDB datasource plugin registration
+├── Dockerfile                            node:18-slim, Evidence dev server
+├── .dockerignore
+├── sources/
+│   └── bench/
+│       ├── connection.yaml               type: duckdb, filename: results.db
+│       ├── results.db                    (copied from benchmarks/results/)
+│       ├── decode.sql                    source query: decode JOIN models JOIN runs
+│       ├── prefill_uniform.sql           source query: prefill_uniform JOIN models JOIN runs
+│       └── prefill_mixed.sql             source query: prefill_mixed JOIN models JOIN runs
+└── pages/
+    ├── index.md                          landing page with links to 3 pages
+    ├── decode.md                         decode benchmark page
+    ├── prefill-uniform.md                prefill uniform benchmark page
+    └── prefill-mixed.md                  prefill mixed benchmark page
+```
+
+### Source queries
+
+Each `.sql` file in `sources/bench/` defines a denormalized view that Evidence caches as Parquet. Pages query against these cached views.
+
+**`decode.sql`**: `SELECT d.*, m.model_name, m.model_size, r.human_name, r.profile, r.gpu_short, r.started_at_utc, r.git_sha FROM decode d JOIN models m ON d.model_sha = m.model_sha JOIN runs r ON d.run_id = r.run_id WHERE d.status = 'ok'`
+
+**`prefill_uniform.sql`**: Same pattern for `prefill_uniform` table.
+
+**`prefill_mixed.sql`**: Same pattern for `prefill_mixed` table.
+
+### Page pattern (same for all 3 pages)
+
+Each page follows the same structure:
+1. **Dropdown filters** — run, model, backend (multi-select, all selected by default)
+2. **BigValue summary cards** — total cases, median tok/s, best tok/s
+3. **BarChart** — primary throughput metric grouped by relevant dimensions
+4. **Additional charts** — scenario-specific (latency for decode, TTFT for prefill, etc.)
+5. **DataTable** — all filtered rows with formatted columns
+
+Evidence handles interactivity natively: `<Dropdown>` components bind to SQL queries via `${inputs.name.value}`, and all downstream queries/charts re-render automatically.
+
+### Page-specific details
+
+**decode.md**:
+- BarChart: avg `decode_tok_per_s` by model/backend/batch_size (horizontal bars)
+- BarChart: step latency p50/p95 (if data exists)
+- DataTable columns: run, model, backend, batch_size, steps, tok/s, total_ms, p50, p95
+
+**prefill-uniform.md**:
+- BarChart: `prefill_tok_per_s` by seq_len, series=backend
+- LineChart: TTFT p50 by seq_len
+- DataTable columns: run, model, backend, batch_size, seq_len, tok/s, total_ms, ttft_p50
+
+**prefill-mixed.md**:
+- BarChart: `prefill_tok_per_s` by mixed_case_id, series=backend
+- DataTable columns: run, model, backend, batch_size, mixed_case_id, tok/s, total_ms, ttft_p50
+
 ## Files to Modify
 
 ### Rust: Benchmark runner → DuckDB output
 
-- **Rename crate**: `crates/web-rwkv-bench/` → `crates/rwkv-bench/`
-  - Update `Cargo.toml`: `name = "rwkv-bench"`, add `duckdb` dependency
-  - Update workspace `Cargo.toml` member path
-  - Update `tests/benchmarks.rs` import (`use rwkv_bench::...`)
-- **`crates/rwkv-bench/src/jsonl.rs`** — Add:
-  - `generate_human_name(run_id: &str) -> String` — deterministic word-pair via SHA-256 (64 adjectives × 64 nouns, const arrays)
-  - `shorten_gpu(cpu_str: &str) -> String` — extract GPU name from host CPU string (e.g., "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S" → "Radeon 8060S")
-- **New file: `crates/rwkv-bench/src/db.rs`** — DuckDB writer:
-  - `DbWriter::open(path)` — opens/creates db with `STORAGE_VERSION 'v1.0.0'`, creates tables if not exist
-  - `DbWriter::insert_run(run: &RunRow)` — begins transaction, inserts run header
-  - `DbWriter::upsert_model(sha, name, size)` — INSERT OR IGNORE into `models`
-  - `DbWriter::insert_decode(m: &DecodeRow)` — inserts into `decode` table
-  - `DbWriter::insert_prefill_uniform(m: &PrefillUniformRow)` — inserts into `prefill_uniform` table
-  - `DbWriter::insert_prefill_mixed(m: &PrefillMixedRow)` — inserts into `prefill_mixed` table
-  - `DbWriter::query_cases(cases, skip_conditions)` — insert expanded cases into temp table, return iterator via SELECT with combined WHERE NOT clauses (see "SQL-Based Case Filtering" section)
-  - `DbWriter::commit()` — commits the whole-run transaction
-- **`crates/rwkv-bench/src/lib.rs`** — Export `db` module
-- **Backend field change**: merge `backend_id` + `wgpu_backend` into single `backend` field:
-  - wgpu: `"wgpu/Vulkan"`, `"wgpu/Metal"`, `"wgpu/Dx12"`
-  - hip: `"hip"`
-  - Affects: `CaseIdentity`, `MeasureRecordSerialized`, `generate_case_id()`, DB schema, config
-- **`tests/benchmarks.rs`**:
-  - Add DuckDB writer alongside JSONL writer
-  - Wrap entire run in a single transaction (`insert_run` ... N × `insert_measurement` ... `commit`)
-  - Remove `update_dashboard_index()` function (lines 1141-1173)
-  - Store `human_name`, `profile`, `gpu_short` in the runs table
-  - Update JSONL filename pattern to `{profile}_{gpu}_{name}.jsonl`
-  - **Implement `prefill_mixed` runner** — currently hardcoded to skip (lines 1253-1262 filter to only `decode_only` and `prefill_uniform`). Add execution loop for `prefill_mixed` cases matching the existing `prefill_uniform` loop pattern.
-- **`benchmarks/config.yaml`** — update `filename_pattern`, update backend config to use new format
+> **Status**: Tickets .1 (rename), .2 (backend merge), .3 (human names), .4 (DuckDB writer) are DONE. Only .5 (wiring) and .6 (prefill_mixed) remain.
 
-### Makefile (new file)
+- ~~**Rename crate**: `crates/web-rwkv-bench/` → `crates/rwkv-bench/`~~ ✓ Done (bd-2x77.1)
+- ~~**Backend field change**: merge `backend_id` + `wgpu_backend` into single `backend` field~~ ✓ Done (bd-2x77.2)
+- ~~**Human names**: `generate_human_name()`, `shorten_gpu()`~~ ✓ Done (bd-2x77.3)
+- ~~**DuckDB writer**: `crates/rwkv-bench/src/db.rs` with `DbWriter`~~ ✓ Done (bd-2x77.4)
+- **Wire DuckDB writer into `tests/benchmarks.rs`** (bd-2x77.5, in progress):
+  - Open `DbWriter` alongside JSONL writer, wrap in `Option` for graceful fallback
+  - Insert run header, upsert models, insert decode/prefill rows
+  - Commit at run end
+  - Remove `update_dashboard_index()`
+- **Implement `prefill_mixed` runner** (bd-2x77.6):
+  - Currently hardcoded to skip (filter to decode_only + prefill_uniform only)
+  - Add execution loop matching prefill_uniform pattern
+  - Write to both DuckDB `prefill_mixed` table and JSONL
+
+### Makefile
 
 ```makefile
-.PHONY: dashboard build bench-promote
+.PHONY: dashboard dashboard-docker
 
-# Start Observable Framework dev server (copies prod DB to dev for local preview)
+# Copy benchmark DB into Evidence sources and start dev server
 dashboard:
-	@mkdir -p benchmarks
-	@if [ ! -f benchmarks/results.db ] && [ -f docs/benchmarks/results.db ]; then \
-		cp docs/benchmarks/results.db benchmarks/results.db; \
-		echo "Copied prod DB → benchmarks/results.db for dev"; \
-	fi
-	cd docs && npx observable preview
+	cp benchmarks/results/results.db docs/sources/bench/results.db
+	cd docs && npm run sources && npm run dev
 
-# Build static site for production
-build:
-	cd docs && npx observable build
-
-# Promote dev benchmark DB to prod (requires clean git)
-bench-promote:
-	@if [ -n "$$(git status --porcelain)" ]; then \
-		echo "Error: git working tree is not clean"; exit 1; \
-	fi
-	cp benchmarks/results.db docs/benchmarks/results.db
-	@echo "Promoted benchmarks/results.db → docs/benchmarks/results.db"
+# Build and run dashboard in a container (podman-compatible, :z for SELinux)
+dashboard-docker:
+	cp benchmarks/results/results.db docs/sources/bench/results.db
+	podman build -t hip-rwkv-dashboard docs/
+	podman run --rm -p 3000:3000 hip-rwkv-dashboard
 ```
 
-### Observable Framework: Dashboard site
-
-- **`docs/package.json`** — `@observablehq/framework` dependency
-- **`docs/observablehq.config.js`** — config:
-  - `title: "hip-rwkv"`
-  - `theme: "dashboard"`
-  - Pages config (excluding `plans/`)
-  - `search: true`
-  - No `dynamicPaths` — run detail uses client-side routing via query parameter
-- **`docs/index.md`** — Landing page with link to benchmarks
-- **`docs/style.css`** — Engineering aesthetic (neutral grays, blue accent, monospace numerics)
-- **`docs/benchmarks/index.md`** — Runs Index:
-  - SQL front matter: `sql: { bench: benchmarks/results.db }`
-  - SQL query joins runs with aggregated measurement stats
-  - Sortable table: human name (linked), date, git SHA, case count, scenarios, models, best tok/s
-- **`docs/benchmarks/run.md`** — Run Detail (client-side routed):
-  - Run ID read from URL query parameter: `?run=<run_id>` (e.g., `/benchmarks/run?run=abc123`)
-  - Linked from Runs Index table
-  - Header card with run metadata from `bench.runs`
-  - Bar chart: `tok_per_s` by case config, colored by backend (Observable Plot)
-  - Line chart: `tok_per_s` vs `batch_size`, lines per model×backend
-  - Measurements table
-- **`docs/benchmarks/compare.md`** — Compare Runs:
-  - Two `Inputs.select` dropdowns from runs table
-  - Match by `case_id`, compute % delta on `tok_per_s`
-  - Diverging bar chart (green=improvement, red=regression)
-  - Comparison table
-
 ### File operations
-
-**Move** (17 planning docs → `docs/plans/`, excluded from sidebar):
-- `docs/DASHBOARD_OVERHAUL_PLAN.md`
-- `docs/BENCHMARKING_DASHBOARD_PLAN.md`
-- `docs/CLEANUP_PLAN.md`
-- `docs/FIXTURE_GENERATION_SPEC.md`
-- `docs/FLA_CHUNK_SIZE_PROFILING.md`
-- `docs/FLA_IMPLEMENTATION_PLAN.md`
-- `docs/hip-rwkv-extraction-plan.md`
-- `docs/HIP_KERNEL_OPTIMIZATION_RESEARCH.md`
-- `docs/HIP_MEMORY_LAYOUT.md`
-- `docs/HIP_OPTIMIZATION_FINDINGS.md`
-- `docs/HIP_PROBE_SYSTEM_PLAN.md`
-- `docs/PACKED_SEQUENCES_PLAN.md`
-- `docs/PREFILL_DECODE_SEPARATION_PLAN.md`
-- `docs/RWKV7_ARCHITECTURE.md`
-- `docs/RWKV7_HIP_BACKEND_PLAN.md`
-- `docs/RWKV7_PAPER_METHOD_SECTION.md`
-- `docs/THEROCK_INSTALLATION.md`
-
-**Rename** (crate):
-- `crates/web-rwkv-bench/` → `crates/rwkv-bench/`
-- Update workspace `Cargo.toml` member entry
-- Update `tests/benchmarks.rs` imports
 
 **Delete** (old dashboard — entire `benches/` tree, 7 files):
 - `benches/dashboard/index.html`
@@ -287,50 +272,13 @@ bench-promote:
 - `scripts/rgp_decode_sqtt.py`
 
 **Update** `.gitignore`:
-- Add: `docs/.observablehq/`, `docs/node_modules/`, `dist/`, `benchmarks/results.db`
-
-**Add** `.gitattributes`:
-- `docs/benchmarks/results.db filter=lfs diff=lfs merge=lfs -text`
+- Add: `docs/node_modules/`, `docs/.evidence/`, `docs/build/`, `docs/.svelte-kit/`, `docs/sources/bench/results.db`
 
 ### GitHub Pages workflow
 
 **`.github/workflows/docs.yml`**:
-- Trigger: push to main, **only when `docs/**` changed** (`paths: ['docs/**']`), plus `workflow_dispatch`
-- Steps: checkout (with lfs), setup-node 20, `npm ci` in `docs/`, `make build`, deploy pages
-
-## Implementation Order
-
-### Phase 1: Rust — DuckDB writer + human names + case filtering
-1. Rename crate `web-rwkv-bench` → `rwkv-bench`, add `duckdb` dependency
-2. Implement `generate_human_name()` with embedded word lists
-3. Implement `shorten_gpu()`
-4. Create `crates/rwkv-bench/src/db.rs` with `DbWriter` (schema creation, transaction-based insert, STORAGE_VERSION pinning, SQL-based case filtering)
-5. Wire into `tests/benchmarks.rs`: open DuckDB writer, use `query_cases()` for filtered iteration, insert measurements, commit at run end
-6. Update config.yaml: filename pattern with new placeholders, condition strings to SQL syntax (`=` not `==`, `backend` not `backend_id`)
-7. Remove `update_dashboard_index()`
-8. Migrate existing 2 JSONL files into `benchmarks/results.db` via duckdb CLI one-liner
-
-### Phase 2: Observable Framework scaffold
-1. Move planning docs to `docs/plans/`
-2. Create `docs/package.json` + `docs/observablehq.config.js`
-3. Create `docs/index.md`
-4. Create `docs/style.css`
-5. Set up git-lfs for `docs/benchmarks/results.db`
-6. Run migration + `make bench-promote` to seed prod db
-7. Update `.gitignore`
-
-### Phase 3: Dashboard pages
-1. Create `docs/benchmarks/index.md` (Runs Index)
-2. Create `docs/benchmarks/run.md` (Run Detail, client-side routed via `?run=` query param)
-3. Create `docs/benchmarks/compare.md` (Compare)
-
-### Phase 4: Cleanup + deployment
-1. Delete `benches/dashboard/` entirely
-2. Delete Python benchmark files
-3. Delete `crates/rwkv-bench/src/skip.rs` (925 lines — replaced by SQL-based case filtering in `db.rs`)
-4. Remove `pub mod skip` / `pub use skip::{LimitsTracker, SkipReason}` from `lib.rs`, `use crate::skip::{..}` from `sweep.rs`
-5. Create Makefile
-6. Create `.github/workflows/docs.yml` (path-filtered to `docs/**`)
+- Trigger: push to main when `docs/**` changed, plus `workflow_dispatch`
+- Steps: checkout, setup-node 18, `npm ci` in `docs/`, copy results.db, `npm run sources`, `npm run build`, deploy pages
 
 ## SQL-Based Case Filtering (replaces custom expression parser)
 
@@ -382,37 +330,65 @@ skip_conditions:
 - Remove `use crate::skip::{should_skip, LimitsTracker, SkipReason, StopReason}` from `sweep.rs`
 - Inline the simple `LimitsTracker` counters (max_cases, max_errors, timeout) into `db.rs` or the runner directly
 
-### Benefits
+## Implementation Tickets (children of bd-2x77)
 
-- Eliminates 925 lines of hand-rolled expression parser
-- Condition strings are now real SQL — users get full SQL expression power (`IN`, `LIKE`, arithmetic, `BETWEEN`, etc.)
-- Single source of truth: the same DuckDB engine evaluates conditions at run time and queries results in the dashboard
-- No impedance mismatch between column names in conditions vs schema
+### Already done
+- ~~bd-2x77.1: Rename crate~~ ✓
+- ~~bd-2x77.2: Merge backend field~~ ✓
+- ~~bd-2x77.3: Human names~~ ✓
+- ~~bd-2x77.4: DuckDB writer~~ ✓
+
+### Remaining Rust tickets
+- **bd-2x77.5**: Wire DuckDB writer into benchmark runner (P1, in progress)
+- **bd-2x77.6**: Implement prefill_mixed benchmark execution (P2, depends on .5)
+- **bd-2x77.12**: Delete old dashboard and Python benchmark scripts (P2, depends on .5)
+
+### New Evidence tickets
+- **T1: Evidence scaffold** (P1) — package.json, evidence.config.yaml, sources/bench/, index.md, .gitignore
+- **T2: decode.md** (P1, depends on T1) — dropdowns, BigValues, BarCharts, DataTable
+- **T3: prefill-uniform.md** (P1, depends on T1) — same pattern with seq_len + TTFT charts
+- **T4: prefill-mixed.md** (P1, depends on T1) — same pattern with mixed_case_id
+- **T5: Docker + Makefile** (P2, depends on T1) — Dockerfile, .dockerignore, Makefile targets
+
+### Dependency graph
+
+```
+bd-2x77.5 (wire DuckDB)
+  └── bd-2x77.6 (prefill_mixed)
+  └── bd-2x77.12 (delete old dashboard)
+
+T1 (Evidence scaffold)
+  ├── T2 (decode.md)
+  ├── T3 (prefill-uniform.md)    ← T2/T3/T4 parallelizable
+  ├── T4 (prefill-mixed.md)
+  └── T5 (Docker + Makefile)
+```
 
 ## Key Design Decisions
 
-- **STORAGE_VERSION 'v1.0.0'**: Observable Framework bundles DuckDB-WASM = DuckDB v1.1.1 (storage version 64). Pinning ensures compatibility. Bump when Observable updates.
-- **Whole-run transaction**: The entire benchmark run (1 run header + N measurements) is a single DuckDB transaction. Either the whole run lands or none of it does. Simpler and faster than per-row commits.
-- **JSONL as secondary output**: JSONL files remain as portable per-run archives with new naming `{profile}_{gpu}_{name}.jsonl`. DuckDB is the primary store.
-- **Dev/prod separation**: Dev db in `benchmarks/results.db` (gitignored), prod in `docs/benchmarks/results.db` (git-lfs). Promotion requires clean git.
-- **Separate tables per scenario**: `decode`, `prefill_uniform`, `prefill_mixed` — no NULL columns, every row is fully populated. Each table has its own scenario-specific params and metrics.
+- **Evidence over Observable**: Observable required JavaScript glue code, had Arrow Table quirks, no loading spinner for SQL blocks, and complex client-side routing. Evidence is SQL-first with built-in components, native DuckDB support, and templated pages.
+- **Server-side queries**: Evidence runs SQL at build time (or dev time), not client-side WASM. Data is baked into static HTML. For a benchmark dashboard that updates infrequently, this is ideal.
+- **Copy-on-build**: DB is copied from `benchmarks/results/` into Evidence `sources/` before build/dev. No symlinks, no runtime path dependencies.
+- **STORAGE_VERSION 'v1.0.0'**: Pinned for DuckDB compatibility across Rust writer and Evidence reader.
+- **Whole-run transaction**: The entire benchmark run (1 run header + N measurements) is a single DuckDB transaction. Either the whole run lands or none of it does.
+- **JSONL as secondary output**: JSONL files remain as portable per-run archives. DuckDB is the primary store.
+- **Separate tables per scenario**: `decode`, `prefill_uniform`, `prefill_mixed` — no NULL columns, every row is fully populated.
 - **`duckdb` crate only in `rwkv-bench`**: No impact on the main binary.
 - **Unified `backend` field**: `"wgpu/Vulkan"`, `"wgpu/Metal"`, `"hip"` — replaces separate `backend_id` + `wgpu_backend` columns.
-- **SQL-based skip conditions**: Custom expression parser in `skip.rs` replaced by DuckDB SQL WHERE clauses. Config condition strings become SQL fragments. Eliminates 925 lines.
-- **`prefill_mixed` support**: Currently hardcoded to skip in the runner (lines 1253-1262 filter to decode_only + prefill_uniform only). Implementing the missing execution loop.
+- **SQL-based skip conditions**: Custom expression parser in `skip.rs` replaced by DuckDB SQL WHERE clauses. Eliminates 925 lines.
 - **No Python**: Config validation, manifest generation, and data loading scripts all removed.
-- **Crate rename**: `web-rwkv-bench` → `rwkv-bench` to match project rename.
-- **GitHub Pages path filter**: Workflow only triggers when `docs/**` files change.
+
+## Risks
+
+- **DuckDB array columns** (`ttft_ms_local` DOUBLE[], `seq_lens` INTEGER[]) may not extract cleanly to Evidence's Parquet cache. Fallback: exclude from source queries or flatten with aggregates.
+- **DuckDB version compat** — DB uses storage_version v1.0.0. Evidence's bundled DuckDB must be able to read it. Verify during scaffold setup.
+- **Evidence input binding syntax** — multi-select `IN ${inputs.name.value}` needs validation.
 
 ## Verification
 
-1. `cargo test --release -p rwkv-bench` — DuckDB writer unit tests pass
-2. `duckdb benchmarks/results.db "SELECT * FROM runs"` — shows runs with human names
-3. `duckdb benchmarks/results.db "SELECT count(*), avg(decode_tok_per_s) FROM decode"` — per-scenario tables work
-4. `make bench-promote` — fails if git dirty, succeeds if clean
-5. `make dashboard` — site loads at localhost:3000
-6. Runs Index shows all runs with human-readable names
-7. Click a run → detail page with charts and table
-8. Compare page: select two runs, see % deltas
-9. `make build` → `docs/dist/` with all static files
-10. Planning docs NOT in sidebar
+1. `cargo check --test benchmarks` — DuckDB wiring compiles
+2. `cargo test --release --test benchmarks -- --ignored --nocapture` — bench writes to both DuckDB and JSONL
+3. `make dashboard` — Evidence dev server starts, all 3 pages load with real data
+4. Dropdown filters on each page update charts and tables
+5. `make dashboard-docker` — container builds and runs
+6. `npm run build` in `docs/` — static site builds

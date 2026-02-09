@@ -166,7 +166,13 @@ When working on tickets, follow this process:
 3. Verify `cargo check` passes after cherry-pick
 4. If divergence is unacceptable, reopen ticket and request changes
 5. Clean up worktree: `git worktree remove --force /tmp/worktree-bd-TICKET`
-6. **CRITICAL: Commit beads updates immediately** — run `git add .beads/ && git commit -m "Update beads"` after every ticket state change (close, claim, etc.). Beads state that isn't committed will desync the tracker from git history and block downstream tickets.
+
+**CRITICAL — One commit per ticket, no exceptions:**
+- Every ticket gets **exactly one commit**. Include code changes AND `.beads/` state in the same commit.
+- The commit message format is: `Short description (bd-TICKET)` — e.g., `Implement DuckDB writer (bd-2x77.4)`
+- Do NOT create separate "Update beads" commits. Stage `.beads/` alongside the code: `git add .beads/ src/changed_file.rs && git commit -m "Description (bd-TICKET)"`
+- **Review fixes get amend'ed** — if the user requests changes after the initial commit for a ticket, fix the code and `git commit --amend`. Never create a second commit for the same ticket.
+- Beads state that isn't committed will desync the tracker from git history.
 
 Example agent workflow (worktree):
 ```bash
@@ -182,15 +188,24 @@ br update bd-2sh.2.1 --claim       # Claim it
 br comments add bd-2sh.2.1 "Diverged from plan: had to also update X because Y"
 # Run tests to verify
 cargo check && cargo test -p crate-name
-# Commit in worktree
+br comments add bd-2sh.2.1 "Done: implemented X with tests. Note: Z for downstream."
+br close bd-2sh.2.1 --suggest-next
+# ONE commit: code + beads together
 cd /tmp/worktree-bd-TICKET
 git checkout -b ticket/bd-2sh.2.1
-git add -A
+git add -A                         # includes .beads/ state
 git commit -m "Implement X (bd-2sh.2.1)"
 # Print hash for orchestrator
 git rev-parse HEAD
-br comments add bd-2sh.2.1 "Done: implemented X with tests. Note: Z for downstream."
-br close bd-2sh.2.1 --suggest-next
+```
+
+Example orchestrator commit (sequential work, no worktree):
+```bash
+# After ticket work is done and verified:
+br close bd-2x77.5 --suggest-next
+git add .beads/ tests/benchmarks.rs crates/rwkv-bench/
+git commit -m "Wire DuckDB writer into benchmark runner (bd-2x77.5)"
+# ONE commit. Never separate beads from code.
 ```
 
 ### JSON Output
@@ -392,6 +407,7 @@ When context is compacted, preserve:
 - **NEVER assume hardware/tools are unavailable** — always check (`rocm-smi`, `which X`, etc.) before skipping verification
 - **Acceptance criteria must be actually verified** — run the commands, check the output, don't assume "should work"
 - The `br` issue tracker workflow (ready, show, claim, close)
+- **One commit per ticket** — code + `.beads/` in one commit, message format `Description (bd-TICKET)`, never separate beads commits
 - **Ticket closure requirements** (commit before close, verify acceptance criteria with runtime checks)
 - **Parallel work requires git worktrees** — one worktree per agent, cherry-pick/rebase back (no merge commits, linear history)
 - **Never reproduce, always copy** — use cp/mv/Edit, never rewrite existing content from memory

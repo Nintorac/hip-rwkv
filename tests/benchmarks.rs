@@ -58,6 +58,7 @@ use rwkv_bench::{
     MeasureRecord, Metrics, PrefillMetrics, PrefillResult, PrefillUniformConfig, RunHeader,
     Scenario, ScenarioParams, Status, TokenGenerator,
 };
+use rwkv_bench::db::{DbWriter, DecodeRow, ModelRow, PrefillUniformRow, RunRow};
 
 /// Default config file path
 const DEFAULT_CONFIG_PATH: &str = "benchmarks/config.yaml";
@@ -1149,40 +1150,6 @@ fn rwkv_version_str(version: ModelVersion) -> &'static str {
 // TESTS
 // =============================================================================
 
-/// Add a new results file entry to the dashboard index.json.
-/// Creates the index if it doesn't exist. Inserts at the front of the files array.
-fn update_dashboard_index(index_path: &Path, filename: &str) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut index: serde_json::Value = if index_path.exists() {
-        serde_json::from_str(&fs::read_to_string(index_path)?)?
-    } else {
-        serde_json::json!({ "files": [], "generated": "", "count": 0 })
-    };
-
-    let files = index.get_mut("files")
-        .and_then(|v| v.as_array_mut())
-        .ok_or("index.json missing 'files' array")?;
-
-    // Don't add duplicates
-    let already_exists = files.iter().any(|f| {
-        f.get("name").and_then(|n| n.as_str()) == Some(filename)
-    });
-    if !already_exists {
-        let now = generate_timestamp_utc();
-        files.insert(0, serde_json::json!({
-            "name": filename,
-            "size": 0,
-            "modified": now,
-        }));
-    }
-
-    let count = files.len();
-    index["count"] = serde_json::json!(count);
-    index["generated"] = serde_json::json!(generate_timestamp_utc());
-
-    fs::write(index_path, serde_json::to_string_pretty(&index)?)?;
-    Ok(count)
-}
-
 /// Smoke test: load config, select profile, expand cases, and run benchmarks
 #[test]
 #[ignore]
@@ -1377,6 +1344,55 @@ async fn bench_smoke_async() {
     }
     println!("[bench] Wrote run header");
 
+    // Open DuckDB writer (optional — failure doesn't block JSONL output)
+    let db_path = Path::new("benchmarks/results.db");
+    let mut db = match DbWriter::open(&db_path) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!(
+                "[bench] WARNING: Failed to open DuckDB: {}. Continuing with JSONL only.",
+                e
+            );
+            None
+        }
+    };
+
+    // Insert run header into DuckDB
+    if let Some(ref mut db) = db {
+        if let Err(e) = db.insert_run(&RunRow {
+            run_id: run_id.clone(),
+            human_name: human_name.clone(),
+            profile: profile_name.clone(),
+            gpu_short: gpu_short.clone(),
+            started_at_utc: timestamp.clone(),
+            git_sha: metadata
+                .git
+                .sha
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
+            git_dirty: metadata.git.dirty.unwrap_or(true),
+            crate_version: metadata
+                .build
+                .crate_version
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
+            rustc_version: metadata
+                .build
+                .rustc_version
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
+            host_os: metadata.host.os.clone(),
+            host_cpu: metadata.host.cpu.clone(),
+            host_ram_gb: metadata.host.ram_gb,
+            gpu_adapter: None,
+            gpu_backend_api: Some(run_header.gpu.backend_api.clone()),
+            gpu_driver_ver: None,
+            uname: metadata.host.uname.clone(),
+        }) {
+            eprintln!("[bench] WARNING: Failed to insert DuckDB run: {}", e);
+        }
+    }
+
     // Track current model to avoid redundant reloads.
     // For HIP: weights persist across chunk/batch changes, only runtime is recreated.
     let mut current_model_path: Option<String> = None;
@@ -1480,6 +1496,15 @@ async fn bench_smoke_async() {
             current_batch_size = Some(case.batch_size);
             current_backend_id = Some(case.backend.backend_id.clone());
             current_token_chunk_size = Some(case.token_chunk_size);
+
+            // Upsert model into DuckDB
+            if let Some(ref mut db) = db {
+                let _ = db.upsert_model(&ModelRow {
+                    model_sha: case.model.model_id.clone(),
+                    model_name: case.model.model_name.clone(),
+                    model_size: case.model.model_size.clone(),
+                });
+            }
         }
 
         let loaded = match &loaded_model {
@@ -1557,6 +1582,31 @@ async fn bench_smoke_async() {
                     if let Err(e) = writer.write_measure(&record) {
                         eprintln!("[bench] Failed to write measure record: {}", e);
                         total_errors += 1;
+                    }
+                }
+
+                // Insert decode rows into DuckDB
+                if let Some(ref mut db) = db {
+                    for (repeat_idx, _repeat) in results.repeats.iter().enumerate() {
+                        let metrics = results.to_metrics_for_repeat(repeat_idx);
+                        let _ = db.insert_decode(&DecodeRow {
+                            run_id: run_id.clone(),
+                            case_id: case_id.clone(),
+                            repeat_index: repeat_idx as i32,
+                            status: "ok".to_string(),
+                            model_sha: case.model.model_id.clone(),
+                            backend: backend_str.clone(),
+                            batch_size: case.batch_size as i32,
+                            token_chunk_size: effective_chunk_size as i32,
+                            decode_steps: decode_steps as i32,
+                            decode_total_ms: Some(metrics.decode_total_ms),
+                            decode_tokens: Some(metrics.decode_tokens as i32),
+                            decode_tok_per_s: Some(metrics.decode_tok_per_s),
+                            step_ms_p50: metrics.decode_step_ms_p50,
+                            step_ms_p95: metrics.decode_step_ms_p95,
+                            error_kind: None,
+                            error_message: None,
+                        });
                     }
                 }
 
@@ -1673,6 +1723,15 @@ async fn bench_smoke_async() {
             current_batch_size = Some(case.batch_size);
             current_backend_id = Some(case.backend.backend_id.clone());
             current_token_chunk_size = Some(case.token_chunk_size);
+
+            // Upsert model into DuckDB
+            if let Some(ref mut db) = db {
+                let _ = db.upsert_model(&ModelRow {
+                    model_sha: case.model.model_id.clone(),
+                    model_name: case.model.model_name.clone(),
+                    model_size: case.model.model_size.clone(),
+                });
+            }
         }
 
         let loaded = match &loaded_model {
@@ -1753,12 +1812,48 @@ async fn bench_smoke_async() {
                     }
                 }
 
+                // Insert prefill_uniform rows into DuckDB
+                if let Some(ref mut db) = db {
+                    for (repeat_idx, repeat) in results.repeats.iter().enumerate() {
+                        let metrics = PrefillMetrics::from(repeat.clone());
+                        let _ = db.insert_prefill_uniform(&PrefillUniformRow {
+                            run_id: run_id.clone(),
+                            case_id: case_id.clone(),
+                            repeat_index: repeat_idx as i32,
+                            status: "ok".to_string(),
+                            model_sha: case.model.model_id.clone(),
+                            backend: backend_str.clone(),
+                            batch_size: case.batch_size as i32,
+                            token_chunk_size: effective_chunk_size as i32,
+                            seq_len: seq_len as i32,
+                            prefill_total_ms: Some(metrics.prefill_total_ms),
+                            total_prompt_tokens: Some(metrics.total_prompt_tokens as i32),
+                            prefill_tok_per_s: Some(metrics.prefill_tok_per_s),
+                            num_infer_calls: Some(metrics.num_infer_calls as i32),
+                            ttft_ms_local: Some(metrics.ttft_ms_local.clone()),
+                            ttft_min_ms: Some(metrics.ttft_min_ms),
+                            ttft_p50_ms: Some(metrics.ttft_p50_ms),
+                            ttft_max_ms: Some(metrics.ttft_max_ms),
+                            error_kind: None,
+                            error_message: None,
+                        });
+                    }
+                }
+
                 total_executed += 1;
             }
             Err(e) => {
                 eprintln!("[bench]   Error: {}", e);
                 total_errors += 1;
             }
+        }
+    }
+
+    // Commit DuckDB before flush/summary
+    if let Some(ref mut db) = db {
+        match db.commit() {
+            Ok(()) => println!("[bench] DuckDB committed successfully"),
+            Err(e) => eprintln!("[bench] WARNING: DuckDB commit failed: {}", e),
         }
     }
 
