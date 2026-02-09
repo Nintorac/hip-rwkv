@@ -42,7 +42,13 @@
 //! ```
 
 use std::path::Path;
+use std::sync::Arc;
 
+use duckdb::arrow::array::{
+    Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder, StringArray,
+};
+use duckdb::arrow::datatypes::{DataType, Field, Schema};
+use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::{params, Connection};
 
 /// Storage version string pinned for DuckDB-WASM v1.1.1 compatibility.
@@ -212,25 +218,172 @@ pub struct SqlSkipConditions {
 // HELPERS
 // =============================================================================
 
-/// Format an `Option<Vec<f64>>` as a DuckDB list literal string (e.g., `[1.0, 2.0]` or `NULL`).
+/// Build a single-row `ListArray` of `Float64` from `Option<Vec<f64>>`.
 ///
-/// The duckdb Rust crate v1.4.4 does not support binding `Value::List` via params,
-/// so we embed numeric arrays as SQL literals. Since these are only numbers,
-/// there is no SQL injection risk.
-fn fmt_f64_list(v: &Option<Vec<f64>>) -> String {
-    match v {
+/// Returns a `ListArray` with one element: either a list of f64 values or null.
+fn build_opt_f64_list(values: &Option<Vec<f64>>) -> ListArray {
+    let mut builder = ListBuilder::new(Float64Builder::new());
+    match values {
         Some(vec) => {
-            let inner: Vec<String> = vec.iter().map(|x| format!("{x}")).collect();
-            format!("[{}]", inner.join(", "))
+            for &v in vec {
+                builder.values().append_value(v);
+            }
+            builder.append(true);
         }
-        None => "NULL".to_string(),
+        None => {
+            builder.append(false); // null list
+        }
     }
+    builder.finish()
 }
 
-/// Format a `Vec<i32>` as a DuckDB list literal string (e.g., `[1, 2, 3]`).
-fn fmt_i32_list(v: &[i32]) -> String {
-    let inner: Vec<String> = v.iter().map(|x| format!("{x}")).collect();
-    format!("[{}]", inner.join(", "))
+/// Build a single-row `ListArray` of `Int32` from `Vec<i32>`.
+///
+/// Returns a `ListArray` with one element containing the i32 values.
+fn build_i32_list(values: &[i32]) -> ListArray {
+    let mut builder = ListBuilder::new(Int32Builder::new());
+    for &v in values {
+        builder.values().append_value(v);
+    }
+    builder.append(true);
+    builder.finish()
+}
+
+/// Helper to create a nullable `StringArray` from `Option<String>`.
+fn opt_str_array(v: &Option<String>) -> StringArray {
+    StringArray::from(vec![v.as_deref()])
+}
+
+/// Helper to create a nullable `Float64Array` from `Option<f64>`.
+fn opt_f64_array(v: Option<f64>) -> Float64Array {
+    Float64Array::from(vec![v])
+}
+
+/// Helper to create a nullable `Int32Array` from `Option<i32>`.
+fn opt_i32_array(v: Option<i32>) -> Int32Array {
+    Int32Array::from(vec![v])
+}
+
+/// Build an Arrow `RecordBatch` for a single `prefill_uniform` row.
+///
+/// The schema matches the `prefill_uniform` table exactly, using `List<Float64>`
+/// for the `ttft_ms_local` column instead of SQL literal embedding.
+fn build_prefill_uniform_batch(row: &PrefillUniformRow) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("run_id", DataType::Utf8, false),
+        Field::new("case_id", DataType::Utf8, false),
+        Field::new("repeat_index", DataType::Int32, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("model_sha", DataType::Utf8, false),
+        Field::new("backend", DataType::Utf8, false),
+        Field::new("batch_size", DataType::Int32, false),
+        Field::new("token_chunk_size", DataType::Int32, false),
+        Field::new("seq_len", DataType::Int32, false),
+        Field::new("prefill_total_ms", DataType::Float64, true),
+        Field::new("total_prompt_tokens", DataType::Int32, true),
+        Field::new("prefill_tok_per_s", DataType::Float64, true),
+        Field::new("num_infer_calls", DataType::Int32, true),
+        Field::new(
+            "ttft_ms_local",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            true,
+        ),
+        Field::new("ttft_min_ms", DataType::Float64, true),
+        Field::new("ttft_p50_ms", DataType::Float64, true),
+        Field::new("ttft_max_ms", DataType::Float64, true),
+        Field::new("error_kind", DataType::Utf8, true),
+        Field::new("error_message", DataType::Utf8, true),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![row.run_id.as_str()])),
+            Arc::new(StringArray::from(vec![row.case_id.as_str()])),
+            Arc::new(Int32Array::from(vec![row.repeat_index])),
+            Arc::new(StringArray::from(vec![row.status.as_str()])),
+            Arc::new(StringArray::from(vec![row.model_sha.as_str()])),
+            Arc::new(StringArray::from(vec![row.backend.as_str()])),
+            Arc::new(Int32Array::from(vec![row.batch_size])),
+            Arc::new(Int32Array::from(vec![row.token_chunk_size])),
+            Arc::new(Int32Array::from(vec![row.seq_len])),
+            Arc::new(opt_f64_array(row.prefill_total_ms)),
+            Arc::new(opt_i32_array(row.total_prompt_tokens)),
+            Arc::new(opt_f64_array(row.prefill_tok_per_s)),
+            Arc::new(opt_i32_array(row.num_infer_calls)),
+            Arc::new(build_opt_f64_list(&row.ttft_ms_local)),
+            Arc::new(opt_f64_array(row.ttft_min_ms)),
+            Arc::new(opt_f64_array(row.ttft_p50_ms)),
+            Arc::new(opt_f64_array(row.ttft_max_ms)),
+            Arc::new(opt_str_array(&row.error_kind)),
+            Arc::new(opt_str_array(&row.error_message)),
+        ],
+    )
+    .expect("prefill_uniform RecordBatch schema mismatch")
+}
+
+/// Build an Arrow `RecordBatch` for a single `prefill_mixed` row.
+///
+/// The schema matches the `prefill_mixed` table exactly, using `List<Int32>`
+/// for `seq_lens` and `List<Float64>` for `ttft_ms_local`.
+fn build_prefill_mixed_batch(row: &PrefillMixedRow) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("run_id", DataType::Utf8, false),
+        Field::new("case_id", DataType::Utf8, false),
+        Field::new("repeat_index", DataType::Int32, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("model_sha", DataType::Utf8, false),
+        Field::new("backend", DataType::Utf8, false),
+        Field::new("batch_size", DataType::Int32, false),
+        Field::new("token_chunk_size", DataType::Int32, false),
+        Field::new("mixed_case_id", DataType::Utf8, false),
+        Field::new(
+            "seq_lens",
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+            false,
+        ),
+        Field::new("prefill_total_ms", DataType::Float64, true),
+        Field::new("total_prompt_tokens", DataType::Int32, true),
+        Field::new("prefill_tok_per_s", DataType::Float64, true),
+        Field::new("num_infer_calls", DataType::Int32, true),
+        Field::new(
+            "ttft_ms_local",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            true,
+        ),
+        Field::new("ttft_min_ms", DataType::Float64, true),
+        Field::new("ttft_p50_ms", DataType::Float64, true),
+        Field::new("ttft_max_ms", DataType::Float64, true),
+        Field::new("error_kind", DataType::Utf8, true),
+        Field::new("error_message", DataType::Utf8, true),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![row.run_id.as_str()])),
+            Arc::new(StringArray::from(vec![row.case_id.as_str()])),
+            Arc::new(Int32Array::from(vec![row.repeat_index])),
+            Arc::new(StringArray::from(vec![row.status.as_str()])),
+            Arc::new(StringArray::from(vec![row.model_sha.as_str()])),
+            Arc::new(StringArray::from(vec![row.backend.as_str()])),
+            Arc::new(Int32Array::from(vec![row.batch_size])),
+            Arc::new(Int32Array::from(vec![row.token_chunk_size])),
+            Arc::new(StringArray::from(vec![row.mixed_case_id.as_str()])),
+            Arc::new(build_i32_list(&row.seq_lens)),
+            Arc::new(opt_f64_array(row.prefill_total_ms)),
+            Arc::new(opt_i32_array(row.total_prompt_tokens)),
+            Arc::new(opt_f64_array(row.prefill_tok_per_s)),
+            Arc::new(opt_i32_array(row.num_infer_calls)),
+            Arc::new(build_opt_f64_list(&row.ttft_ms_local)),
+            Arc::new(opt_f64_array(row.ttft_min_ms)),
+            Arc::new(opt_f64_array(row.ttft_p50_ms)),
+            Arc::new(opt_f64_array(row.ttft_max_ms)),
+            Arc::new(opt_str_array(&row.error_kind)),
+            Arc::new(opt_str_array(&row.error_message)),
+        ],
+    )
+    .expect("prefill_mixed RecordBatch schema mismatch")
 }
 
 // =============================================================================
@@ -456,85 +609,29 @@ impl DbWriter {
     }
 
     /// Insert a row into the `prefill_uniform` table.
+    ///
+    /// Uses Arrow-based `append_record_batch` to handle `DOUBLE[]` column
+    /// (`ttft_ms_local`) without SQL literal embedding.
     pub fn insert_prefill_uniform(&mut self, row: &PrefillUniformRow) -> DbResult<()> {
         self.ensure_transaction()?;
-        let ttft_literal = fmt_f64_list(&row.ttft_ms_local);
-        let sql = format!(
-            "INSERT INTO prefill_uniform (
-                run_id, case_id, repeat_index, status,
-                model_sha, backend, batch_size, token_chunk_size,
-                seq_len, prefill_total_ms, total_prompt_tokens, prefill_tok_per_s,
-                num_infer_calls, ttft_ms_local, ttft_min_ms, ttft_p50_ms, ttft_max_ms,
-                error_kind, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {ttft_literal}, ?, ?, ?, ?, ?)"
-        );
-        self.conn.execute(
-            &sql,
-            params![
-                row.run_id,
-                row.case_id,
-                row.repeat_index,
-                row.status,
-                row.model_sha,
-                row.backend,
-                row.batch_size,
-                row.token_chunk_size,
-                row.seq_len,
-                row.prefill_total_ms,
-                row.total_prompt_tokens,
-                row.prefill_tok_per_s,
-                row.num_infer_calls,
-                // ttft_ms_local is inlined in the SQL
-                row.ttft_min_ms,
-                row.ttft_p50_ms,
-                row.ttft_max_ms,
-                row.error_kind,
-                row.error_message,
-            ],
-        )?;
+        let batch = build_prefill_uniform_batch(row);
+        let mut appender = self.conn.appender("prefill_uniform")?;
+        appender.append_record_batch(batch)?;
+        appender.flush()?;
         Ok(())
     }
 
     /// Insert a row into the `prefill_mixed` table.
+    ///
+    /// Uses Arrow-based `append_record_batch` to handle `INTEGER[]` and
+    /// `DOUBLE[]` columns (`seq_lens`, `ttft_ms_local`) without SQL literal
+    /// embedding.
     pub fn insert_prefill_mixed(&mut self, row: &PrefillMixedRow) -> DbResult<()> {
         self.ensure_transaction()?;
-        let seq_lens_literal = fmt_i32_list(&row.seq_lens);
-        let ttft_literal = fmt_f64_list(&row.ttft_ms_local);
-        let sql = format!(
-            "INSERT INTO prefill_mixed (
-                run_id, case_id, repeat_index, status,
-                model_sha, backend, batch_size, token_chunk_size,
-                mixed_case_id, seq_lens,
-                prefill_total_ms, total_prompt_tokens, prefill_tok_per_s,
-                num_infer_calls, ttft_ms_local, ttft_min_ms, ttft_p50_ms, ttft_max_ms,
-                error_kind, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {seq_lens_literal}, ?, ?, ?, ?, {ttft_literal}, ?, ?, ?, ?, ?)"
-        );
-        self.conn.execute(
-            &sql,
-            params![
-                row.run_id,
-                row.case_id,
-                row.repeat_index,
-                row.status,
-                row.model_sha,
-                row.backend,
-                row.batch_size,
-                row.token_chunk_size,
-                row.mixed_case_id,
-                // seq_lens is inlined in the SQL
-                row.prefill_total_ms,
-                row.total_prompt_tokens,
-                row.prefill_tok_per_s,
-                row.num_infer_calls,
-                // ttft_ms_local is inlined in the SQL
-                row.ttft_min_ms,
-                row.ttft_p50_ms,
-                row.ttft_max_ms,
-                row.error_kind,
-                row.error_message,
-            ],
-        )?;
+        let batch = build_prefill_mixed_batch(row);
+        let mut appender = self.conn.appender("prefill_mixed")?;
+        appender.append_record_batch(batch)?;
+        appender.flush()?;
         Ok(())
     }
 

@@ -166,7 +166,7 @@ When working on tickets, follow this process:
 3. Verify `cargo check` passes after cherry-pick
 4. If divergence is unacceptable, reopen ticket and request changes
 5. Clean up worktree: `git worktree remove --force /tmp/worktree-bd-TICKET`
-6. Commit beads updates separately
+6. **CRITICAL: Commit beads updates immediately** — run `git add .beads/ && git commit -m "Update beads"` after every ticket state change (close, claim, etc.). Beads state that isn't committed will desync the tracker from git history and block downstream tickets.
 
 Example agent workflow (worktree):
 ```bash
