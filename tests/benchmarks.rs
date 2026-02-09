@@ -58,7 +58,7 @@ use rwkv_bench::{
     MeasureRecord, Metrics, PrefillMetrics, PrefillResult, PrefillUniformConfig, RunHeader,
     Scenario, ScenarioParams, Status, TokenGenerator,
 };
-use rwkv_bench::db::{DbWriter, DecodeRow, ModelRow, PrefillUniformRow, RunRow};
+use rwkv_bench::db::{CaseRow, DbWriter, DecodeRow, ExpandedCaseInput, ModelRow, PrefillUniformRow, RunRow, SqlSkipConditions};
 
 /// Default config file path
 const DEFAULT_CONFIG_PATH: &str = "benchmarks/config.yaml";
@@ -666,29 +666,7 @@ pub fn expand_profile(
     for model in &models {
         for backend in &backends {
             for &batch_size in &profile.batch_sizes {
-                // Check batch size limit
-                if let Some(max) = model.max_batch_size {
-                    if batch_size > max {
-                        println!(
-                            "[bench] Skipping batch_size={} for {} (max={})",
-                            batch_size, model.model_name, max
-                        );
-                        continue;
-                    }
-                }
-
                 for &token_chunk_size in &profile.token_chunk_sizes {
-                    // Check chunk size limit
-                    if let Some(max) = model.max_token_chunk_size {
-                        if token_chunk_size > max {
-                            println!(
-                                "[bench] Skipping token_chunk_size={} for {} (max={})",
-                                token_chunk_size, model.model_name, max
-                            );
-                            continue;
-                        }
-                    }
-
                     for scenario in &profile.scenarios {
                         match scenario.as_str() {
                             "decode_only" => {
@@ -1228,30 +1206,110 @@ async fn bench_smoke_async() {
         }
     };
 
-    // Filter to decode_only and prefill_uniform cases
-    let decode_cases: Vec<_> = cases
-        .iter()
-        .filter(|c| c.scenario == "decode_only")
-        .collect();
-
-    let prefill_cases: Vec<_> = cases
-        .iter()
-        .filter(|c| c.scenario == "prefill_uniform")
-        .collect();
-
-    println!("\n[bench] Expanded {} total cases", cases.len());
-    println!("[bench]   decode_only: {}", decode_cases.len());
-    println!("[bench]   prefill_uniform: {}", prefill_cases.len());
-
-    if decode_cases.is_empty() && prefill_cases.is_empty() {
-        println!("[bench] No cases to run");
-        return;
-    }
+    println!("\n[bench] Expanded {} total cases (before filtering)", cases.len());
 
     // Create output directory
     let output_dir = Path::new(&config.output.directory);
     if let Err(e) = fs::create_dir_all(output_dir) {
         eprintln!("[bench] Failed to create output directory: {}", e);
+        return;
+    }
+
+    // Open DuckDB writer early (needed for query_cases filtering)
+    let db_path = Path::new(&config.output.directory).join("results.db");
+    let mut db = match DbWriter::open(&db_path) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!(
+                "[bench] WARNING: Failed to open DuckDB: {}. Continuing with JSONL only.",
+                e
+            );
+            None
+        }
+    };
+
+    // Convert expanded cases to DB input format
+    let case_inputs: Vec<ExpandedCaseInput> = cases
+        .iter()
+        .map(|c| {
+            let backend_str = unified_backend_string(&c.backend);
+            ExpandedCaseInput {
+                scenario: c.scenario.clone(),
+                model_name: c.model.model_name.clone(),
+                model_sha: c.model.model_id.clone(),
+                backend: backend_str,
+                batch_size: c.batch_size as i32,
+                token_chunk_size: c.token_chunk_size as i32,
+                seq_len: c.seq_len.map(|v| v as i32),
+                decode_steps: c.decode_steps.map(|v| v as i32),
+                max_batch_size: c.model.max_batch_size.map(|v| v as i32),
+                max_token_chunk_size: c.model.max_token_chunk_size.map(|v| v as i32),
+                mixed_case_id: None,
+            }
+        })
+        .collect();
+
+    // Convert skip conditions to SQL format
+    let sql_skip = SqlSkipConditions {
+        skip_batch_exceeds_model_max: config.skip_conditions.skip_batch_exceeds_model_max,
+        skip_chunk_exceeds_model_max: config.skip_conditions.skip_chunk_exceeds_model_max,
+        custom_rules: config
+            .skip_conditions
+            .custom_rules
+            .iter()
+            .map(|r| r.condition.clone())
+            .collect(),
+    };
+
+    // Filter cases via DuckDB SQL
+    let filtered_cases: Vec<CaseRow> = if let Some(ref db) = db {
+        match db.query_cases(&case_inputs, &sql_skip) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("[bench] WARNING: query_cases failed: {}. Using unfiltered cases.", e);
+                case_inputs.iter().map(|c| CaseRow {
+                    scenario: c.scenario.clone(),
+                    model_name: c.model_name.clone(),
+                    model_sha: c.model_sha.clone(),
+                    backend: c.backend.clone(),
+                    batch_size: c.batch_size,
+                    token_chunk_size: c.token_chunk_size,
+                    seq_len: c.seq_len,
+                    decode_steps: c.decode_steps,
+                    max_batch_size: c.max_batch_size,
+                    max_token_chunk_size: c.max_token_chunk_size,
+                    mixed_case_id: c.mixed_case_id.clone(),
+                }).collect()
+            }
+        }
+    } else {
+        // No DB -- just convert inputs to CaseRow
+        case_inputs.iter().map(|c| CaseRow {
+            scenario: c.scenario.clone(),
+            model_name: c.model_name.clone(),
+            model_sha: c.model_sha.clone(),
+            backend: c.backend.clone(),
+            batch_size: c.batch_size,
+            token_chunk_size: c.token_chunk_size,
+            seq_len: c.seq_len,
+            decode_steps: c.decode_steps,
+            max_batch_size: c.max_batch_size,
+            max_token_chunk_size: c.max_token_chunk_size,
+            mixed_case_id: c.mixed_case_id.clone(),
+        }).collect()
+    };
+
+    let decode_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "decode_only").collect();
+    let prefill_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "prefill_uniform").collect();
+    let mixed_rows: Vec<_> = filtered_cases.iter().filter(|c| c.scenario == "prefill_mixed").collect();
+
+    println!("\n[bench] After filtering: {} cases", filtered_cases.len());
+    println!("[bench]   decode_only: {}", decode_rows.len());
+    println!("[bench]   prefill_uniform: {}", prefill_rows.len());
+    println!("[bench]   prefill_mixed: {} (not yet implemented)", mixed_rows.len());
+
+    if decode_rows.is_empty() && prefill_rows.is_empty() {
+        println!("[bench] No cases to run");
         return;
     }
 
@@ -1344,19 +1402,6 @@ async fn bench_smoke_async() {
     }
     println!("[bench] Wrote run header");
 
-    // Open DuckDB writer (optional — failure doesn't block JSONL output)
-    let db_path = Path::new("benchmarks/results.db");
-    let mut db = match DbWriter::open(&db_path) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            eprintln!(
-                "[bench] WARNING: Failed to open DuckDB: {}. Continuing with JSONL only.",
-                e
-            );
-            None
-        }
-    };
-
     // Insert run header into DuckDB
     if let Some(ref mut db) = db {
         if let Err(e) = db.insert_run(&RunRow {
@@ -1405,39 +1450,59 @@ async fn bench_smoke_async() {
     let mut total_executed = 0;
     let mut total_errors = 0;
 
-    for case in &decode_cases {
-        let decode_steps = match case.decode_steps {
-            Some(steps) => steps,
+    for row in &decode_rows {
+        let decode_steps = match row.decode_steps {
+            Some(steps) => steps as u32,
             None => {
-                println!(
-                    "[bench] Skipping case without decode_steps: {}",
-                    case.case_id()
-                );
+                println!("[bench] Skipping case without decode_steps");
                 continue;
             }
         };
 
+        // Resolve model entry from config
+        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+            Some(m) => m,
+            None => {
+                eprintln!("[bench] Model not found in config: {}", row.model_name);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        // Resolve backend entry from config
+        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+            Some(b) => b,
+            None => {
+                eprintln!("[bench] Backend not found in config: {}", row.backend);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let batch_size = row.batch_size as u32;
+        let token_chunk_size = row.token_chunk_size as u32;
+
         // Check what changed
-        let model_changed = current_model_path.as_ref() != Some(&case.model.path)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
-        let config_changed = current_batch_size != Some(case.batch_size)
-            || current_token_chunk_size != Some(case.token_chunk_size);
+        let model_changed = current_model_path.as_ref() != Some(&model.path)
+            || current_backend_id.as_ref() != Some(&backend.backend_id);
+        let config_changed = current_batch_size != Some(batch_size)
+            || current_token_chunk_size != Some(token_chunk_size);
 
         if model_changed || config_changed {
-            if !Path::new(&case.model.path).exists() {
-                eprintln!("[bench] Model file not found: {}", case.model.path);
+            if !Path::new(&model.path).exists() {
+                eprintln!("[bench] Model file not found: {}", model.path);
                 total_errors += 1;
                 continue;
             }
 
-            if case.backend.backend_id == "hip" {
+            if backend.backend_id == "hip" {
                 // Only reload weights from disk when model path changes
                 if model_changed {
                     println!(
                         "\n[bench] Loading weights: {} (from disk)",
-                        case.model.model_name
+                        model.model_name
                     );
-                    match load_hip_weights(&case.model.path) {
+                    match load_hip_weights(&model.path) {
                         Ok(hw) => {
                             println!("[bench] Weights loaded: {:?}", hw.info.version);
                             hip_weights = Some(hw);
@@ -1456,11 +1521,11 @@ async fn bench_smoke_async() {
                 };
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
-                    case.batch_size, case.token_chunk_size
+                    batch_size, token_chunk_size
                 );
-                match create_hip_runtime(hw, case.batch_size as usize, case.token_chunk_size as usize) {
-                    Ok(model) => {
-                        loaded_model = Some(model);
+                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                    Ok(m) => {
+                        loaded_model = Some(m);
                     }
                     Err(e) => {
                         eprintln!("[bench] Failed to create runtime: {}", e);
@@ -1471,19 +1536,19 @@ async fn bench_smoke_async() {
             } else {
                 println!(
                     "\n[bench] Loading model: {} (batch={})",
-                    case.model.model_name, case.batch_size
+                    model.model_name, batch_size
                 );
                 match load_model(
-                    &case.model.path,
-                    case.batch_size as usize,
-                    case.token_chunk_size as usize,
-                    &case.backend.backend_id,
+                    &model.path,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    &backend.backend_id,
                 )
                 .await
                 {
-                    Ok(model) => {
-                        println!("[bench] Model loaded: {:?}", model.info.version);
-                        loaded_model = Some(model);
+                    Ok(m) => {
+                        println!("[bench] Model loaded: {:?}", m.info.version);
+                        loaded_model = Some(m);
                     }
                     Err(e) => {
                         eprintln!("[bench] Failed to load model: {}", e);
@@ -1492,17 +1557,17 @@ async fn bench_smoke_async() {
                     }
                 }
             }
-            current_model_path = Some(case.model.path.clone());
-            current_batch_size = Some(case.batch_size);
-            current_backend_id = Some(case.backend.backend_id.clone());
-            current_token_chunk_size = Some(case.token_chunk_size);
+            current_model_path = Some(model.path.clone());
+            current_batch_size = Some(batch_size);
+            current_backend_id = Some(backend.backend_id.clone());
+            current_token_chunk_size = Some(token_chunk_size);
 
             // Upsert model into DuckDB
             if let Some(ref mut db) = db {
                 let _ = db.upsert_model(&ModelRow {
-                    model_sha: case.model.model_id.clone(),
-                    model_name: case.model.model_name.clone(),
-                    model_size: case.model.model_size.clone(),
+                    model_sha: model.model_id.clone(),
+                    model_name: model.model_name.clone(),
+                    model_size: model.model_size.clone(),
                 });
             }
         }
@@ -1516,13 +1581,13 @@ async fn bench_smoke_async() {
         };
 
         // Generate case_id
-        let effective_chunk_size = round_chunk_size(case.token_chunk_size);
-        let backend_str = unified_backend_string(&case.backend);
+        let effective_chunk_size = round_chunk_size(token_chunk_size);
+        let backend_str = unified_backend_string(backend);
         let case_id_params = CaseIdParams {
             scenario: Scenario::DecodeOnly,
-            model_id: &case.model.model_name,
+            model_id: &model.model_name,
             backend: &backend_str,
-            batch_size: case.batch_size,
+            batch_size,
             token_chunk_size_effective: effective_chunk_size,
             decode_steps: Some(decode_steps),
             seq_len: None,
@@ -1532,17 +1597,17 @@ async fn bench_smoke_async() {
 
         println!(
             "[bench] Running: {} (steps={}, warmup={}, repeats={})",
-            case_id, decode_steps, case.warmup_runs, case.repeats
+            case_id, decode_steps, profile.warmup_runs, profile.repeats
         );
 
         // Run the benchmark
         match run_decode_benchmark(
             loaded,
-            case.batch_size,
-            case.token_chunk_size as usize,
+            batch_size,
+            token_chunk_size as usize,
             decode_steps,
-            case.warmup_runs,
-            case.repeats,
+            profile.warmup_runs,
+            profile.repeats,
         )
         .await
         {
@@ -1565,14 +1630,14 @@ async fn bench_smoke_async() {
                         error_kind: None,
                         error_message: None,
                         case_identity: CaseIdentity {
-                            model_id: case.model.model_id.clone(),
-                            model_name: case.model.model_name.clone(),
-                            model_path: case.model.path.clone(),
-                            model_size: case.model.model_size.clone(),
+                            model_id: model.model_id.clone(),
+                            model_name: model.model_name.clone(),
+                            model_path: model.path.clone(),
+                            model_size: model.model_size.clone(),
                             rwkv_version: rwkv_version_str(loaded.info.version).to_string(),
                             backend: backend_str.clone(),
-                            batch_size: case.batch_size,
-                            token_chunk_size_requested: case.token_chunk_size,
+                            batch_size,
+                            token_chunk_size_requested: token_chunk_size,
                             token_chunk_size_effective: effective_chunk_size,
                         },
                         scenario_params: ScenarioParams::Decode { decode_steps },
@@ -1594,9 +1659,9 @@ async fn bench_smoke_async() {
                             case_id: case_id.clone(),
                             repeat_index: repeat_idx as i32,
                             status: "ok".to_string(),
-                            model_sha: case.model.model_id.clone(),
+                            model_sha: model.model_id.clone(),
                             backend: backend_str.clone(),
-                            batch_size: case.batch_size as i32,
+                            batch_size: batch_size as i32,
                             token_chunk_size: effective_chunk_size as i32,
                             decode_steps: decode_steps as i32,
                             decode_total_ms: Some(metrics.decode_total_ms),
@@ -1632,39 +1697,59 @@ async fn bench_smoke_async() {
     loaded_model = None;
     hip_weights = None;
 
-    for case in &prefill_cases {
-        let seq_len = match case.seq_len {
-            Some(len) => len,
+    for row in &prefill_rows {
+        let seq_len = match row.seq_len {
+            Some(len) => len as u32,
             None => {
-                println!(
-                    "[bench] Skipping prefill case without seq_len: {}",
-                    case.case_id()
-                );
+                println!("[bench] Skipping prefill case without seq_len");
                 continue;
             }
         };
 
+        // Resolve model entry from config
+        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+            Some(m) => m,
+            None => {
+                eprintln!("[bench] Model not found in config: {}", row.model_name);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        // Resolve backend entry from config
+        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+            Some(b) => b,
+            None => {
+                eprintln!("[bench] Backend not found in config: {}", row.backend);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let batch_size = row.batch_size as u32;
+        let token_chunk_size = row.token_chunk_size as u32;
+
         // Check what changed
-        let model_changed = current_model_path.as_ref() != Some(&case.model.path)
-            || current_backend_id.as_ref() != Some(&case.backend.backend_id);
-        let config_changed = current_batch_size != Some(case.batch_size)
-            || current_token_chunk_size != Some(case.token_chunk_size);
+        let model_changed = current_model_path.as_ref() != Some(&model.path)
+            || current_backend_id.as_ref() != Some(&backend.backend_id);
+        let config_changed = current_batch_size != Some(batch_size)
+            || current_token_chunk_size != Some(token_chunk_size);
 
         if model_changed || config_changed {
-            if !Path::new(&case.model.path).exists() {
-                eprintln!("[bench] Model file not found: {}", case.model.path);
+            if !Path::new(&model.path).exists() {
+                eprintln!("[bench] Model file not found: {}", model.path);
                 total_errors += 1;
                 continue;
             }
 
-            if case.backend.backend_id == "hip" {
+            if backend.backend_id == "hip" {
                 // Only reload weights from disk when model path changes
                 if model_changed {
                     println!(
                         "\n[bench] Loading weights: {} (from disk)",
-                        case.model.model_name
+                        model.model_name
                     );
-                    match load_hip_weights(&case.model.path) {
+                    match load_hip_weights(&model.path) {
                         Ok(hw) => {
                             println!("[bench] Weights loaded: {:?}", hw.info.version);
                             hip_weights = Some(hw);
@@ -1683,11 +1768,11 @@ async fn bench_smoke_async() {
                 };
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
-                    case.batch_size, case.token_chunk_size
+                    batch_size, token_chunk_size
                 );
-                match create_hip_runtime(hw, case.batch_size as usize, case.token_chunk_size as usize) {
-                    Ok(model) => {
-                        loaded_model = Some(model);
+                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                    Ok(m) => {
+                        loaded_model = Some(m);
                     }
                     Err(e) => {
                         eprintln!("[bench] Failed to create runtime: {}", e);
@@ -1698,19 +1783,19 @@ async fn bench_smoke_async() {
             } else {
                 println!(
                     "\n[bench] Loading model: {} (batch={})",
-                    case.model.model_name, case.batch_size
+                    model.model_name, batch_size
                 );
                 match load_model(
-                    &case.model.path,
-                    case.batch_size as usize,
-                    case.token_chunk_size as usize,
-                    &case.backend.backend_id,
+                    &model.path,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    &backend.backend_id,
                 )
                 .await
                 {
-                    Ok(model) => {
-                        println!("[bench] Model loaded: {:?}", model.info.version);
-                        loaded_model = Some(model);
+                    Ok(m) => {
+                        println!("[bench] Model loaded: {:?}", m.info.version);
+                        loaded_model = Some(m);
                     }
                     Err(e) => {
                         eprintln!("[bench] Failed to load model: {}", e);
@@ -1719,17 +1804,17 @@ async fn bench_smoke_async() {
                     }
                 }
             }
-            current_model_path = Some(case.model.path.clone());
-            current_batch_size = Some(case.batch_size);
-            current_backend_id = Some(case.backend.backend_id.clone());
-            current_token_chunk_size = Some(case.token_chunk_size);
+            current_model_path = Some(model.path.clone());
+            current_batch_size = Some(batch_size);
+            current_backend_id = Some(backend.backend_id.clone());
+            current_token_chunk_size = Some(token_chunk_size);
 
             // Upsert model into DuckDB
             if let Some(ref mut db) = db {
                 let _ = db.upsert_model(&ModelRow {
-                    model_sha: case.model.model_id.clone(),
-                    model_name: case.model.model_name.clone(),
-                    model_size: case.model.model_size.clone(),
+                    model_sha: model.model_id.clone(),
+                    model_name: model.model_name.clone(),
+                    model_size: model.model_size.clone(),
                 });
             }
         }
@@ -1743,13 +1828,13 @@ async fn bench_smoke_async() {
         };
 
         // Generate case_id for prefill
-        let effective_chunk_size = round_chunk_size(case.token_chunk_size);
-        let backend_str = unified_backend_string(&case.backend);
+        let effective_chunk_size = round_chunk_size(token_chunk_size);
+        let backend_str = unified_backend_string(backend);
         let case_id_params = CaseIdParams {
             scenario: Scenario::PrefillUniform,
-            model_id: &case.model.model_name,
+            model_id: &model.model_name,
             backend: &backend_str,
-            batch_size: case.batch_size,
+            batch_size,
             token_chunk_size_effective: effective_chunk_size,
             decode_steps: None,
             seq_len: Some(seq_len),
@@ -1759,17 +1844,17 @@ async fn bench_smoke_async() {
 
         println!(
             "[bench] Running: {} (seq_len={}, warmup={}, repeats={})",
-            case_id, seq_len, case.warmup_runs, case.repeats
+            case_id, seq_len, profile.warmup_runs, profile.repeats
         );
 
         // Run the prefill benchmark
         match run_prefill_benchmark(
             loaded,
-            case.batch_size,
-            case.token_chunk_size as usize,
+            batch_size,
+            token_chunk_size as usize,
             seq_len,
-            case.warmup_runs,
-            case.repeats,
+            profile.warmup_runs,
+            profile.repeats,
         )
         .await
         {
@@ -1792,14 +1877,14 @@ async fn bench_smoke_async() {
                         error_kind: None,
                         error_message: None,
                         case_identity: CaseIdentity {
-                            model_id: case.model.model_id.clone(),
-                            model_name: case.model.model_name.clone(),
-                            model_path: case.model.path.clone(),
-                            model_size: case.model.model_size.clone(),
+                            model_id: model.model_id.clone(),
+                            model_name: model.model_name.clone(),
+                            model_path: model.path.clone(),
+                            model_size: model.model_size.clone(),
                             rwkv_version: rwkv_version_str(loaded.info.version).to_string(),
                             backend: backend_str.clone(),
-                            batch_size: case.batch_size,
-                            token_chunk_size_requested: case.token_chunk_size,
+                            batch_size,
+                            token_chunk_size_requested: token_chunk_size,
                             token_chunk_size_effective: effective_chunk_size,
                         },
                         scenario_params: ScenarioParams::PrefillUniform { seq_len },
@@ -1821,9 +1906,9 @@ async fn bench_smoke_async() {
                             case_id: case_id.clone(),
                             repeat_index: repeat_idx as i32,
                             status: "ok".to_string(),
-                            model_sha: case.model.model_id.clone(),
+                            model_sha: model.model_id.clone(),
                             backend: backend_str.clone(),
-                            batch_size: case.batch_size as i32,
+                            batch_size: batch_size as i32,
                             token_chunk_size: effective_chunk_size as i32,
                             seq_len: seq_len as i32,
                             prefill_total_ms: Some(metrics.prefill_total_ms),
@@ -1847,6 +1932,13 @@ async fn bench_smoke_async() {
                 total_errors += 1;
             }
         }
+    }
+
+    // =========================================================================
+    // PREFILL_MIXED CASES (not yet implemented -- see bd-2x77.6)
+    // =========================================================================
+    if !mixed_rows.is_empty() {
+        println!("\n--- Skipping {} prefill_mixed cases (not yet implemented) ---\n", mixed_rows.len());
     }
 
     // Commit DuckDB before flush/summary
@@ -1929,4 +2021,174 @@ fn bench_validate_config() {
     }
 
     println!("\n[bench] Config validation passed!");
+}
+
+/// Test that query_cases() correctly applies skip conditions.
+/// Uses an in-memory DuckDB (no file), inserts synthetic cases, and verifies
+/// that built-in max checks and custom SQL rules filter correctly.
+#[test]
+fn test_query_cases_skip_conditions() {
+    use rwkv_bench::db::{DbWriter, ExpandedCaseInput, SqlSkipConditions};
+
+    // Open an in-memory DuckDB for testing
+    let tmp = std::env::temp_dir().join("test_skip_conditions.db");
+    let _ = fs::remove_file(&tmp);
+    let db = DbWriter::open(&tmp).expect("Failed to open test DB");
+
+    // Synthetic cases: 2 models × 2 backends × 2 batch sizes = 8 cases
+    let cases = vec![
+        // model_a, hip, batch=16 — should PASS (under max)
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "model_a".into(),
+            model_sha: "sha_a".into(),
+            backend: "hip".into(),
+            batch_size: 16,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: Some(32),
+            max_token_chunk_size: Some(256),
+            mixed_case_id: None,
+        },
+        // model_a, hip, batch=64 — should be SKIPPED (batch > max_batch_size=32)
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "model_a".into(),
+            model_sha: "sha_a".into(),
+            backend: "hip".into(),
+            batch_size: 64,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: Some(32),
+            max_token_chunk_size: Some(256),
+            mixed_case_id: None,
+        },
+        // model_a, wgpu/Vulkan, batch=16 — should PASS
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "model_a".into(),
+            model_sha: "sha_a".into(),
+            backend: "wgpu/Vulkan".into(),
+            batch_size: 16,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: Some(32),
+            max_token_chunk_size: Some(256),
+            mixed_case_id: None,
+        },
+        // model_a, wgpu/Vulkan, batch=512 — should be SKIPPED by BOTH max AND custom rule
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "model_a".into(),
+            model_sha: "sha_a".into(),
+            backend: "wgpu/Vulkan".into(),
+            batch_size: 512,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: Some(32),
+            max_token_chunk_size: Some(256),
+            mixed_case_id: None,
+        },
+        // puzzle15, hip, batch=4 — should be SKIPPED by custom rule
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "rwkv_puzzle15".into(),
+            model_sha: "sha_p".into(),
+            backend: "hip".into(),
+            batch_size: 4,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: None,
+            max_token_chunk_size: None,
+            mixed_case_id: None,
+        },
+        // puzzle15, wgpu/Vulkan, batch=4 — should PASS (custom rule only targets hip)
+        ExpandedCaseInput {
+            scenario: "decode_only".into(),
+            model_name: "rwkv_puzzle15".into(),
+            model_sha: "sha_p".into(),
+            backend: "wgpu/Vulkan".into(),
+            batch_size: 4,
+            token_chunk_size: 128,
+            seq_len: None,
+            decode_steps: Some(64),
+            max_batch_size: None,
+            max_token_chunk_size: None,
+            mixed_case_id: None,
+        },
+        // model_b, hip, batch=32, seq_len=2048 — should be SKIPPED (batch>16 AND seq_len>1024)
+        ExpandedCaseInput {
+            scenario: "prefill_uniform".into(),
+            model_name: "model_b".into(),
+            model_sha: "sha_b".into(),
+            backend: "hip".into(),
+            batch_size: 32,
+            token_chunk_size: 128,
+            seq_len: Some(2048),
+            decode_steps: None,
+            max_batch_size: None,
+            max_token_chunk_size: None,
+            mixed_case_id: None,
+        },
+        // model_b, hip, batch=8, seq_len=2048 — should PASS (batch<=16, so rule doesn't apply)
+        ExpandedCaseInput {
+            scenario: "prefill_uniform".into(),
+            model_name: "model_b".into(),
+            model_sha: "sha_b".into(),
+            backend: "hip".into(),
+            batch_size: 8,
+            token_chunk_size: 128,
+            seq_len: Some(2048),
+            decode_steps: None,
+            max_batch_size: None,
+            max_token_chunk_size: None,
+            mixed_case_id: None,
+        },
+    ];
+
+    let skip = SqlSkipConditions {
+        skip_batch_exceeds_model_max: true,
+        skip_chunk_exceeds_model_max: true,
+        custom_rules: vec![
+            "model_name = 'rwkv_puzzle15' AND backend = 'hip'".into(),
+            "backend LIKE 'wgpu%' AND batch_size > 256".into(),
+            "batch_size > 16 AND seq_len > 1024".into(),
+        ],
+    };
+
+    let result = db.query_cases(&cases, &skip).expect("query_cases failed");
+
+    // Expected survivors: 4 cases
+    // 1. model_a / hip / bs16       (pass)
+    // 2. model_a / wgpu / bs16      (pass)
+    // 3. puzzle15 / wgpu / bs4      (pass — rule only skips hip)
+    // 4. model_b / hip / bs8 / s2048 (pass — batch<=16)
+    let names: Vec<String> = result
+        .iter()
+        .map(|r| format!("{}/{}/bs{}", r.model_name, r.backend, r.batch_size))
+        .collect();
+    println!("Surviving cases: {:?}", names);
+
+    assert_eq!(result.len(), 4, "Expected 4 cases after filtering, got {}: {:?}", result.len(), names);
+
+    // Verify specific cases survived
+    assert!(result.iter().any(|r| r.model_name == "model_a" && r.backend == "hip" && r.batch_size == 16));
+    assert!(result.iter().any(|r| r.model_name == "model_a" && r.backend == "wgpu/Vulkan" && r.batch_size == 16));
+    assert!(result.iter().any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "wgpu/Vulkan"));
+    assert!(result.iter().any(|r| r.model_name == "model_b" && r.batch_size == 8));
+
+    // Verify specific cases were filtered
+    assert!(!result.iter().any(|r| r.model_name == "model_a" && r.batch_size == 64), "batch=64 should be skipped (exceeds max)");
+    assert!(!result.iter().any(|r| r.model_name == "model_a" && r.batch_size == 512), "batch=512 should be skipped");
+    assert!(!result.iter().any(|r| r.model_name == "rwkv_puzzle15" && r.backend == "hip"), "puzzle15/hip should be skipped");
+    assert!(!result.iter().any(|r| r.model_name == "model_b" && r.batch_size == 32), "batch=32 + seq=2048 should be skipped");
+
+    // Cleanup
+    let _ = fs::remove_file(&tmp);
+    println!("\n[test] All skip conditions validated!");
 }

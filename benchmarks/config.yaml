@@ -473,15 +473,15 @@ skip_conditions:
   custom_rules:
     - name: "skip_large_batch_large_seq"
       description: "Skip batch_size > 16 when seq_len > 1024"
-      condition: "batch_size > 16 and seq_len > 1024"
+      condition: "batch_size > 16 AND seq_len > 1024"
 
     - name: "skip_puzzle15_hip"
       description: "Skip puzzle15 model on hip backend (custom ops not supported)"
-      condition: "model_name == 'rwkv_puzzle15' and backend == 'hip'"
+      condition: "model_name = 'rwkv_puzzle15' AND backend = 'hip'"
 
     - name: "skip_wgpu_large_batch"
       description: "Skip large batch sizes on wgpu to avoid buffer size limits"
-      condition: "starts_with(backend, 'wgpu') and batch_size > 256"
+      condition: "backend LIKE 'wgpu%' AND batch_size > 256"
 
 # =============================================================================
 # LIMITS
