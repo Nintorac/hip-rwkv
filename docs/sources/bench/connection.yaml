@@ -1,0 +1,4 @@
+name: bench
+type: duckdb
+options:
+  filename: results.db

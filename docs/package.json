@@ -1,0 +1,17 @@
+{
+  "name": "hip-rwkv-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sources": "evidence sources",
+    "dev": "evidence dev --port 3000",
+    "build": "evidence build",
+    "preview": "evidence preview"
+  },
+  "dependencies": {
+    "@evidence-dev/evidence": "latest",
+    "@evidence-dev/core-components": "latest",
+    "@evidence-dev/duckdb": "latest"
+  }
+}

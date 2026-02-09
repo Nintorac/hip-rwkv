@@ -12,3 +12,10 @@ repos/
 benchmarks/results/
 results*
 .rocprofv3/
+
+# Evidence dashboard
+docs/node_modules/
+docs/.evidence/
+docs/build/
+docs/.svelte-kit/
+docs/sources/bench/results.db
