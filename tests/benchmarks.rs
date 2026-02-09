@@ -52,13 +52,14 @@ use web_rwkv::{
 };
 
 use rwkv_bench::{
-    collect_run_metadata, generate_case_id, generate_human_name, generate_run_id,
-    generate_timestamp_utc, round_chunk_size, shorten_gpu, CaseIdParams, CaseIdentity,
-    DecodeConfig, DecodeResults, JsonlGpuInfo, JsonlHostInfo as HostInfo, JsonlWriter,
-    MeasureRecord, Metrics, PrefillMetrics, PrefillResult, PrefillUniformConfig, RunHeader,
-    Scenario, ScenarioParams, Status, TokenGenerator,
+    all_mixed_case_ids, collect_run_metadata, generate_case_id, generate_human_name,
+    generate_lengths_from_str, generate_run_id, generate_timestamp_utc, round_chunk_size,
+    shorten_gpu, CaseIdParams, CaseIdentity, DecodeConfig, DecodeResults, JsonlGpuInfo,
+    JsonlHostInfo as HostInfo, JsonlWriter, MeasureRecord, Metrics, PrefillMetrics,
+    PrefillMixedResult, PrefillResult, PrefillUniformConfig, RunHeader, Scenario, ScenarioParams,
+    Status, TokenGenerator,
 };
-use rwkv_bench::db::{CaseRow, DbWriter, DecodeRow, ExpandedCaseInput, ModelRow, PrefillUniformRow, RunRow, SqlSkipConditions};
+use rwkv_bench::db::{CaseRow, DbWriter, DecodeRow, ExpandedCaseInput, ModelRow, PrefillMixedRow, PrefillUniformRow, RunRow, SqlSkipConditions};
 
 /// Default config file path
 const DEFAULT_CONFIG_PATH: &str = "benchmarks/config.yaml";
@@ -1090,6 +1091,130 @@ async fn run_prefill_benchmark(
     })
 }
 
+/// Results from a prefill-mixed benchmark run across multiple repeats.
+#[derive(Debug)]
+struct PrefillMixedBenchResults {
+    /// Per-batch sequence lengths used
+    #[allow(dead_code)]
+    pub seq_lens: Vec<u32>,
+    /// Results for each repeat
+    pub repeats: Vec<PrefillMixedResult>,
+    /// Median throughput across repeats
+    pub median_tok_per_s: f64,
+    /// Mean throughput across repeats
+    pub mean_tok_per_s: f64,
+    /// Min throughput across repeats
+    #[allow(dead_code)]
+    pub min_tok_per_s: f64,
+    /// Max throughput across repeats
+    #[allow(dead_code)]
+    pub max_tok_per_s: f64,
+}
+
+/// Run a prefill-mixed benchmark case.
+///
+/// For mixed prefill, each batch element gets a different sequence length
+/// determined by the mixed_case_id pattern. We run inference with variable-length
+/// token sequences per batch slot.
+async fn run_prefill_mixed_benchmark(
+    loaded: &LoadedModel,
+    batch_size: u32,
+    token_chunk_size: usize,
+    seq_lens: &[u32],
+    warmup_runs: u32,
+    repeats: u32,
+) -> anyhow::Result<PrefillMixedBenchResults> {
+    use std::time::{Duration, Instant};
+
+    let vocab_size = loaded.vocab_size;
+    let runtime = &loaded.runtime;
+    let settle_ms = 50u64;
+
+    let mut results = Vec::with_capacity(repeats as usize);
+
+    // === Warmup Phase ===
+    for _ in 0..warmup_runs {
+        let mut gen = TokenGenerator::new(42, vocab_size);
+        // Generate per-batch tokens with variable lengths
+        let batches: Vec<RnnInputBatch> = seq_lens
+            .iter()
+            .map(|&len| {
+                let tokens = gen.generate(len as usize);
+                let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
+                RnnInputBatch::new(tokens_u32, RnnOption::Last)
+            })
+            .collect();
+
+        let input = RnnInput::new(batches, token_chunk_size);
+        let _ = runtime
+            .infer(input)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
+    // === Measurement Phase ===
+    for repeat_idx in 0..repeats {
+        if repeat_idx > 0 {
+            tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+        }
+
+        // Generate deterministic tokens (same seed each repeat for reproducibility)
+        let mut gen = TokenGenerator::new(42, vocab_size);
+        let batches: Vec<RnnInputBatch> = seq_lens
+            .iter()
+            .map(|&len| {
+                let tokens = gen.generate(len as usize);
+                let tokens_u32: Vec<u32> = tokens.iter().map(|&t| t as u32).collect();
+                RnnInputBatch::new(tokens_u32, RnnOption::Last)
+            })
+            .collect();
+
+        let mut input = RnnInput::new(batches, token_chunk_size);
+
+        // Timed prefill: loop over all chunks until input is exhausted
+        let mut num_infer_calls = 0u32;
+        let start = Instant::now();
+        while input.num_token() > 0 {
+            let (remaining, _) = runtime
+                .infer(input)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            input = remaining;
+            num_infer_calls += 1;
+        }
+        let elapsed = start.elapsed();
+
+        let prefill_total_ms = elapsed.as_secs_f64() * 1000.0;
+        let total_prompt_tokens: u32 = seq_lens.iter().sum();
+        let _prefill_tok_per_s = total_prompt_tokens as f64 / elapsed.as_secs_f64();
+
+        // For mixed prefill, approximate TTFT: all batches complete at max time
+        // (precise per-batch TTFT tracking would require runtime API changes)
+        let ttft_ms_local = vec![prefill_total_ms; batch_size as usize];
+
+        let result = PrefillMixedResult::from_ttft(
+            ttft_ms_local,
+            seq_lens,
+            num_infer_calls,
+        );
+
+        results.push(result);
+    }
+
+    // Calculate aggregate statistics
+    let throughputs: Vec<f64> = results.iter().map(|r| r.prefill_tok_per_s).collect();
+    let (median, mean, min, max) = calculate_stats(&throughputs);
+
+    Ok(PrefillMixedBenchResults {
+        seq_lens: seq_lens.to_vec(),
+        repeats: results,
+        median_tok_per_s: median,
+        mean_tok_per_s: mean,
+        min_tok_per_s: min,
+        max_tok_per_s: max,
+    })
+}
+
 /// Calculate statistics from a slice of values.
 fn calculate_stats(values: &[f64]) -> (f64, f64, f64, f64) {
     if values.is_empty() {
@@ -1306,9 +1431,9 @@ async fn bench_smoke_async() {
     println!("\n[bench] After filtering: {} cases", filtered_cases.len());
     println!("[bench]   decode_only: {}", decode_rows.len());
     println!("[bench]   prefill_uniform: {}", prefill_rows.len());
-    println!("[bench]   prefill_mixed: {} (not yet implemented)", mixed_rows.len());
+    println!("[bench]   prefill_mixed: {}", mixed_rows.len());
 
-    if decode_rows.is_empty() && prefill_rows.is_empty() {
+    if decode_rows.is_empty() && prefill_rows.is_empty() && mixed_rows.is_empty() {
         println!("[bench] No cases to run");
         return;
     }
@@ -1935,10 +2060,276 @@ async fn bench_smoke_async() {
     }
 
     // =========================================================================
-    // PREFILL_MIXED CASES (not yet implemented -- see bd-2x77.6)
+    // PREFILL_MIXED CASES
     // =========================================================================
-    if !mixed_rows.is_empty() {
-        println!("\n--- Skipping {} prefill_mixed cases (not yet implemented) ---\n", mixed_rows.len());
+    println!("\n--- Running prefill_mixed cases ---\n");
+
+    // Collect mixed_case_ids from config (or fall back to all known patterns)
+    let mixed_case_ids: Vec<String> = config
+        .scenarios
+        .get("prefill_mixed")
+        .and_then(|sc| sc.defaults.get("mixed_case_ids"))
+        .and_then(|v| {
+            v.as_sequence().map(|seq| {
+                seq.iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+        })
+        .unwrap_or_else(|| all_mixed_case_ids().iter().map(|s| s.to_string()).collect());
+
+    // Reset model tracking for mixed cases
+    current_model_path = None;
+    current_batch_size = None;
+    current_backend_id = None;
+    current_token_chunk_size = None;
+    loaded_model = None;
+    hip_weights = None;
+
+    for row in &mixed_rows {
+        // Resolve model entry from config
+        let model = match config.models.iter().find(|m| m.model_name == row.model_name) {
+            Some(m) => m,
+            None => {
+                eprintln!("[bench] Model not found in config: {}", row.model_name);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        // Resolve backend entry from config
+        let backend = match config.backends.iter().find(|b| unified_backend_string(b) == row.backend) {
+            Some(b) => b,
+            None => {
+                eprintln!("[bench] Backend not found in config: {}", row.backend);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let batch_size = row.batch_size as u32;
+        let token_chunk_size = row.token_chunk_size as u32;
+
+        // Check what changed
+        let model_changed = current_model_path.as_ref() != Some(&model.path)
+            || current_backend_id.as_ref() != Some(&backend.backend_id);
+        let config_changed = current_batch_size != Some(batch_size)
+            || current_token_chunk_size != Some(token_chunk_size);
+
+        if model_changed || config_changed {
+            if !Path::new(&model.path).exists() {
+                eprintln!("[bench] Model file not found: {}", model.path);
+                total_errors += 1;
+                continue;
+            }
+
+            if backend.backend_id == "hip" {
+                if model_changed {
+                    println!(
+                        "\n[bench] Loading weights: {} (from disk)",
+                        model.model_name
+                    );
+                    match load_hip_weights(&model.path) {
+                        Ok(hw) => {
+                            println!("[bench] Weights loaded: {:?}", hw.info.version);
+                            hip_weights = Some(hw);
+                        }
+                        Err(e) => {
+                            eprintln!("[bench] Failed to load weights: {}", e);
+                            total_errors += 1;
+                            continue;
+                        }
+                    }
+                }
+                let hw = match &hip_weights {
+                    Some(hw) => hw,
+                    None => { total_errors += 1; continue; }
+                };
+                println!(
+                    "[bench] Creating runtime: batch={}, chunk={}",
+                    batch_size, token_chunk_size
+                );
+                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                    Ok(m) => {
+                        loaded_model = Some(m);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to create runtime: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
+                }
+            } else {
+                println!(
+                    "\n[bench] Loading model: {} (batch={})",
+                    model.model_name, batch_size
+                );
+                match load_model(
+                    &model.path,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    &backend.backend_id,
+                )
+                .await
+                {
+                    Ok(m) => {
+                        println!("[bench] Model loaded: {:?}", m.info.version);
+                        loaded_model = Some(m);
+                    }
+                    Err(e) => {
+                        eprintln!("[bench] Failed to load model: {}", e);
+                        total_errors += 1;
+                        continue;
+                    }
+                }
+            }
+            current_model_path = Some(model.path.clone());
+            current_batch_size = Some(batch_size);
+            current_backend_id = Some(backend.backend_id.clone());
+            current_token_chunk_size = Some(token_chunk_size);
+
+            // Upsert model into DuckDB
+            if let Some(ref mut db) = db {
+                let _ = db.upsert_model(&ModelRow {
+                    model_sha: model.model_id.clone(),
+                    model_name: model.model_name.clone(),
+                    model_size: model.model_size.clone(),
+                });
+            }
+        }
+
+        let loaded = match &loaded_model {
+            Some(m) => m,
+            None => {
+                eprintln!("[bench] No model loaded");
+                continue;
+            }
+        };
+
+        let effective_chunk_size = round_chunk_size(token_chunk_size);
+        let backend_str = unified_backend_string(backend);
+
+        // Run each mixed_case_id pattern for this (model, backend, batch_size, chunk_size)
+        for mixed_case_id in &mixed_case_ids {
+            // Generate per-batch sequence lengths from the mixed pattern
+            let seq_lens = match generate_lengths_from_str(mixed_case_id, batch_size, token_chunk_size) {
+                Ok(lens) => lens,
+                Err(e) => {
+                    eprintln!("[bench] Failed to generate mixed lengths for {}: {}", mixed_case_id, e);
+                    total_errors += 1;
+                    continue;
+                }
+            };
+
+            // Generate case_id for mixed prefill
+            let case_id_params = CaseIdParams {
+                scenario: Scenario::PrefillMixed,
+                model_id: &model.model_name,
+                backend: &backend_str,
+                batch_size,
+                token_chunk_size_effective: effective_chunk_size,
+                decode_steps: None,
+                seq_len: None,
+                mixed_case_id: Some(mixed_case_id),
+            };
+            let case_id = generate_case_id(&case_id_params);
+
+            println!(
+                "[bench] Running: {} (mixed_case={}, seq_lens={:?}, warmup={}, repeats={})",
+                case_id, mixed_case_id, seq_lens, profile.warmup_runs, profile.repeats
+            );
+
+            // Run the mixed prefill benchmark
+            match run_prefill_mixed_benchmark(
+                loaded,
+                batch_size,
+                token_chunk_size as usize,
+                &seq_lens,
+                profile.warmup_runs,
+                profile.repeats,
+            )
+            .await
+            {
+                Ok(results) => {
+                    println!(
+                        "[bench]   Median: {:.1} tok/s, Mean: {:.1} tok/s",
+                        results.median_tok_per_s, results.mean_tok_per_s
+                    );
+
+                    // Write JSONL measure records for each repeat
+                    for (repeat_idx, repeat) in results.repeats.iter().enumerate() {
+                        let metrics = PrefillMetrics::from(repeat.clone());
+
+                        let record = MeasureRecord {
+                            run_id: run_id.clone(),
+                            case_id: case_id.clone(),
+                            repeat_index: repeat_idx as u32,
+                            scenario: Scenario::PrefillMixed,
+                            status: Status::Ok,
+                            error_kind: None,
+                            error_message: None,
+                            case_identity: CaseIdentity {
+                                model_id: model.model_id.clone(),
+                                model_name: model.model_name.clone(),
+                                model_path: model.path.clone(),
+                                model_size: model.model_size.clone(),
+                                rwkv_version: rwkv_version_str(loaded.info.version).to_string(),
+                                backend: backend_str.clone(),
+                                batch_size,
+                                token_chunk_size_requested: token_chunk_size,
+                                token_chunk_size_effective: effective_chunk_size,
+                            },
+                            scenario_params: ScenarioParams::PrefillMixed {
+                                seq_lens: seq_lens.clone(),
+                                mixed_case_id: mixed_case_id.clone(),
+                            },
+                            metrics: Some(Metrics::Prefill(metrics)),
+                        };
+
+                        if let Err(e) = writer.write_measure(&record) {
+                            eprintln!("[bench] Failed to write measure record: {}", e);
+                            total_errors += 1;
+                        }
+                    }
+
+                    // Insert prefill_mixed rows into DuckDB
+                    if let Some(ref mut db) = db {
+                        let seq_lens_i32: Vec<i32> = seq_lens.iter().map(|&v| v as i32).collect();
+                        for (repeat_idx, repeat) in results.repeats.iter().enumerate() {
+                            let metrics = PrefillMetrics::from(repeat.clone());
+                            let _ = db.insert_prefill_mixed(&PrefillMixedRow {
+                                run_id: run_id.clone(),
+                                case_id: case_id.clone(),
+                                repeat_index: repeat_idx as i32,
+                                status: "ok".to_string(),
+                                model_sha: model.model_id.clone(),
+                                backend: backend_str.clone(),
+                                batch_size: batch_size as i32,
+                                token_chunk_size: effective_chunk_size as i32,
+                                mixed_case_id: mixed_case_id.clone(),
+                                seq_lens: seq_lens_i32.clone(),
+                                prefill_total_ms: Some(metrics.prefill_total_ms),
+                                total_prompt_tokens: Some(metrics.total_prompt_tokens as i32),
+                                prefill_tok_per_s: Some(metrics.prefill_tok_per_s),
+                                num_infer_calls: Some(metrics.num_infer_calls as i32),
+                                ttft_ms_local: Some(metrics.ttft_ms_local.clone()),
+                                ttft_min_ms: Some(metrics.ttft_min_ms),
+                                ttft_p50_ms: Some(metrics.ttft_p50_ms),
+                                ttft_max_ms: Some(metrics.ttft_max_ms),
+                                error_kind: None,
+                                error_message: None,
+                            });
+                        }
+                    }
+
+                    total_executed += 1;
+                }
+                Err(e) => {
+                    eprintln!("[bench]   Error: {}", e);
+                    total_errors += 1;
+                }
+            }
+        }
     }
 
     // Commit DuckDB before flush/summary
