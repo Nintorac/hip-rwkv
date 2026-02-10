@@ -3,7 +3,6 @@
 use half::f16;
 use std::ffi::c_int;
 
-use super::host_helpers::kernel_launch;
 use super::validation::{require_contiguous_4, require_contiguous_pair};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
@@ -364,7 +363,12 @@ pub fn hip_layer_norm(
 
 // Group normalization: divides channels into groups and normalizes within each group.
 // Used in RWKV7 with 12 groups (H = 12 heads) and eps = 64e-5.
-dual_precision_group_norm!(group_norm_f32, group_norm_f16, launch_group_norm_f32, launch_group_norm_f16);
+dual_precision_group_norm!(
+    group_norm_f32,
+    group_norm_f16,
+    launch_group_norm_f32,
+    launch_group_norm_f16
+);
 
 /// Compute group normalization on host data.
 pub fn hip_group_norm(
@@ -417,7 +421,12 @@ pub fn hip_group_norm(
 
 // L2 normalization: normalizes each head to unit L2 norm.
 // Used for key normalization in RWKV7.
-dual_precision_l2_norm!(l2_norm_f32, l2_norm_f16, launch_l2_norm_f32, launch_l2_norm_f16);
+dual_precision_l2_norm!(
+    l2_norm_f32,
+    l2_norm_f16,
+    launch_l2_norm_f32,
+    launch_l2_norm_f16
+);
 
 /// Compute L2 normalization on host data.
 pub fn hip_l2_norm(

@@ -208,7 +208,7 @@ fn generate_bimodal_half(batch_size: u32, chunk_size: u32) -> Vec<u32> {
     let short_len = ensure_min_one(chunk_size / 8);
     let long_len = ensure_min_one(4 * chunk_size);
 
-    let num_long = (batch_size + 1) / 2; // ceil(B/2)
+    let num_long = batch_size.div_ceil(2); // ceil(B/2)
     let num_short = batch_size / 2; // floor(B/2)
 
     let mut lengths = Vec::with_capacity(batch_size as usize);

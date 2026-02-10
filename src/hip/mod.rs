@@ -52,7 +52,10 @@ pub use pinned::PinnedBuffer;
 pub use tensor::{TensorHip, TensorShape, TensorView};
 
 // Re-export scratch buffer types
-pub use scratch::{DecodeConfig, DecodeScratch, HipRuntimeConfig, HipScratch, LoraDims, PrefillConfig, PrefillScratch};
+pub use scratch::{
+    DecodeConfig, DecodeScratch, HipRuntimeConfig, HipScratch, LoraDims, PrefillConfig,
+    PrefillScratch,
+};
 
 // Re-export kernel functions
 pub use kernels::{
@@ -94,10 +97,10 @@ pub use kernels::{
     squared_relu_f32,
     tanh_f32,
     token_shift_f32,
+    wkv7_fused_t1,
     // WKV7 rocBLAS GEMV implementation
     wkv7_gemv_f32,
     wkv7_wave_reduce,
-    wkv7_fused_t1,
     wkv_bonus_f32,
 };
 

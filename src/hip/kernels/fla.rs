@@ -13,8 +13,8 @@ use super::host_helpers::kernel_launch;
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
     check, launch_fla_chunk_h, launch_fla_chunk_o, launch_fla_cumsum_intra,
-    launch_fla_neg_exp_f16_to_f32, launch_fla_wy_repr,
-    launch_state_transpose, HipErrorKind, Result,
+    launch_fla_neg_exp_f16_to_f32, launch_fla_wy_repr, launch_state_transpose, HipErrorKind,
+    Result,
 };
 use crate::hip::tensor::TensorHip;
 
@@ -202,13 +202,19 @@ pub fn fla_cumsum_intra(
     {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_cumsum_intra: all attention matrix tensors must be contiguous".to_string(),
+            message: "fla_cumsum_intra: all attention matrix tensors must be contiguous"
+                .to_string(),
         });
     }
-    if !chunk_indices.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
+    if !chunk_indices.is_contiguous()
+        || !cu_seqlens.is_contiguous()
+        || !batch_offsets.is_contiguous()
+    {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_cumsum_intra: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
+            message:
+                "fla_cumsum_intra: chunk_indices, cu_seqlens, and batch_offsets must be contiguous"
+                    .to_string(),
         });
     }
 
@@ -378,10 +384,14 @@ pub fn fla_wy_repr(
             message: "fla_wy_repr: all tensors must be contiguous".to_string(),
         });
     }
-    if !chunk_indices.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
+    if !chunk_indices.is_contiguous()
+        || !cu_seqlens.is_contiguous()
+        || !batch_offsets.is_contiguous()
+    {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_wy_repr: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
+            message: "fla_wy_repr: chunk_indices, cu_seqlens, and batch_offsets must be contiguous"
+                .to_string(),
         });
     }
 
@@ -571,10 +581,14 @@ pub fn fla_chunk_h(
             message: "fla_chunk_h: state and h_out must be contiguous".to_string(),
         });
     }
-    if !chunk_offsets.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
+    if !chunk_offsets.is_contiguous()
+        || !cu_seqlens.is_contiguous()
+        || !batch_offsets.is_contiguous()
+    {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_chunk_h: chunk_offsets, cu_seqlens, and batch_offsets must be contiguous".to_string(),
+            message: "fla_chunk_h: chunk_offsets, cu_seqlens, and batch_offsets must be contiguous"
+                .to_string(),
         });
     }
 
@@ -750,11 +764,7 @@ pub fn fla_chunk_o(
     }
 
     // Validate contiguity
-    if !qg.is_contiguous()
-        || !v.is_contiguous()
-        || !v_new.is_contiguous()
-        || !o.is_contiguous()
-    {
+    if !qg.is_contiguous() || !v.is_contiguous() || !v_new.is_contiguous() || !o.is_contiguous() {
         return Err(HipErrorKind {
             code: -1,
             message: "fla_chunk_o: all per-token tensors must be contiguous".to_string(),
@@ -772,10 +782,14 @@ pub fn fla_chunk_o(
             message: "fla_chunk_o: h (per-chunk state) must be contiguous".to_string(),
         });
     }
-    if !chunk_indices.is_contiguous() || !cu_seqlens.is_contiguous() || !batch_offsets.is_contiguous() {
+    if !chunk_indices.is_contiguous()
+        || !cu_seqlens.is_contiguous()
+        || !batch_offsets.is_contiguous()
+    {
         return Err(HipErrorKind {
             code: -1,
-            message: "fla_chunk_o: chunk_indices, cu_seqlens, and batch_offsets must be contiguous".to_string(),
+            message: "fla_chunk_o: chunk_indices, cu_seqlens, and batch_offsets must be contiguous"
+                .to_string(),
         });
     }
 
@@ -903,7 +917,11 @@ pub fn state_transpose(
             code: -1,
             message: format!(
                 "state_transpose: src too small: need {} elements (K={}, H={}, B={}), got {}",
-                expected_len, k, num_heads, batch_size, src.len()
+                expected_len,
+                k,
+                num_heads,
+                batch_size,
+                src.len()
             ),
         });
     }
@@ -917,7 +935,7 @@ pub fn state_transpose(
     }
 
     // Validate that src and dst do not alias (out-of-place only)
-    if src.as_ptr() == dst.as_ptr() as *const f32 {
+    if std::ptr::eq(src.as_ptr(), dst.as_ptr()) {
         return Err(HipErrorKind {
             code: -1,
             message: "state_transpose: src and dst must not alias (out-of-place only)".to_string(),
@@ -965,18 +983,14 @@ mod tests {
         let shape = TensorShape::new(k, k, h, b);
 
         // Fill source with distinct values: index-based pattern so any corruption is obvious.
-        let src_data: Vec<f32> = (0..total)
-            .map(|i| (i as f32) * 0.001 + 1.0)
-            .collect();
+        let src_data: Vec<f32> = (0..total).map(|i| (i as f32) * 0.001 + 1.0).collect();
 
-        let src_tensor = TensorHip::from_slice(&src_data, shape, &stream)
-            .expect("Failed to create src tensor");
+        let src_tensor =
+            TensorHip::from_slice(&src_data, shape, &stream).expect("Failed to create src tensor");
 
         // Allocate destination buffers for two transposes
-        let mut mid_tensor = TensorHip::<f32>::zeros(shape)
-            .expect("Failed to create mid tensor");
-        let mut dst_tensor = TensorHip::<f32>::zeros(shape)
-            .expect("Failed to create dst tensor");
+        let mut mid_tensor = TensorHip::<f32>::zeros(shape).expect("Failed to create mid tensor");
+        let mut dst_tensor = TensorHip::<f32>::zeros(shape).expect("Failed to create dst tensor");
 
         // First transpose: src -> mid
         state_transpose(&src_tensor, &mut mid_tensor, h, b, &stream)
@@ -988,17 +1002,16 @@ mod tests {
 
         // Read back results
         stream.synchronize().expect("Stream sync failed");
-        let result = dst_tensor.to_vec(&stream).expect("Failed to read dst tensor");
+        let result = dst_tensor
+            .to_vec(&stream)
+            .expect("Failed to read dst tensor");
 
         // Verify exact equality (transpose of transpose should be bitwise identical)
-        assert_eq!(
-            result.len(),
-            src_data.len(),
-            "Result length mismatch"
-        );
+        assert_eq!(result.len(), src_data.len(), "Result length mismatch");
         for (i, (&expected, &actual)) in src_data.iter().zip(result.iter()).enumerate() {
             assert_eq!(
-                expected, actual,
+                expected,
+                actual,
                 "Mismatch at index {}: expected {}, got {} (mat={}, row={}, col={})",
                 i,
                 expected,
@@ -1035,14 +1048,12 @@ mod tests {
             }
         }
 
-        let src_tensor = TensorHip::from_slice(&src_data, shape, &stream)
-            .expect("Failed to create src tensor");
+        let src_tensor =
+            TensorHip::from_slice(&src_data, shape, &stream).expect("Failed to create src tensor");
 
-        let mut dst_tensor = TensorHip::<f32>::zeros(shape)
-            .expect("Failed to create dst tensor");
+        let mut dst_tensor = TensorHip::<f32>::zeros(shape).expect("Failed to create dst tensor");
 
-        state_transpose(&src_tensor, &mut dst_tensor, h, b, &stream)
-            .expect("Transpose failed");
+        state_transpose(&src_tensor, &mut dst_tensor, h, b, &stream).expect("Transpose failed");
 
         stream.synchronize().expect("Stream sync failed");
         let result = dst_tensor.to_vec(&stream).expect("Failed to read result");

@@ -3,7 +3,6 @@
 use half::f16;
 use std::ffi::c_int;
 
-use super::host_helpers::kernel_launch;
 use super::validation::{require_all_contiguous, require_contiguous_5};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{check, launch_wkv_bonus_f16, launch_wkv_bonus_f32, HipErrorKind, Result};
@@ -53,7 +52,9 @@ macro_rules! dual_precision_wkv_bonus {
                     code: -1,
                     message: format!(
                         "r_k shape mismatch: expected [{}, {}, 1, 1], got {}",
-                        n, h, r_k.shape()
+                        n,
+                        h,
+                        r_k.shape()
                     ),
                 });
             }
@@ -105,7 +106,12 @@ macro_rules! dual_precision_wkv_bonus {
 
 // WKV bonus kernel (time_first): output = (r * k * r_k).sum(dim=head_size) * v
 // This is the "time_first" bonus attention on the current token.
-dual_precision_wkv_bonus!(wkv_bonus_f32, wkv_bonus_f16, launch_wkv_bonus_f32, launch_wkv_bonus_f16);
+dual_precision_wkv_bonus!(
+    wkv_bonus_f32,
+    wkv_bonus_f16,
+    launch_wkv_bonus_f32,
+    launch_wkv_bonus_f16
+);
 
 /// Compute WKV bonus on host data, returning results.
 /// This is a convenience function for testing.
@@ -274,7 +280,7 @@ pub fn wkv7_fused_t1(
     v: &TensorHip<f16>,
     a: &TensorHip<f16>,
     b: &TensorHip<f16>,
-    state: &mut TensorHip<f32>,  // in-place
+    state: &mut TensorHip<f32>, // in-place
     output: &mut TensorHip<f16>,
     lengths: &TensorHip<i32>,
     stream: &Stream,

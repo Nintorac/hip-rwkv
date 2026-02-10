@@ -196,7 +196,13 @@ pub fn embed_lookup(
             if ps.probes.contains_key(&probe::HipHook::PostEmbed) {
                 let data = download_f16_as_f32(x, stream)?;
                 let actual_t = ps.ctx.seq_len;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostEmbed, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostEmbed,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -213,7 +219,13 @@ pub fn embed_lookup(
             if ps.probes.contains_key(&probe::HipHook::PostEmbedLayerNorm) {
                 let data = download_f16_as_f32(x, stream)?;
                 let actual_t = ps.ctx.seq_len;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostEmbedLayerNorm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostEmbedLayerNorm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -319,7 +331,7 @@ pub fn attention_block<F>(
 where
     F: FnOnce(WkvCallInputs<'_>, &mut TensorHip<f32>, &mut TensorHip<f16>) -> Result<()>,
 {
-    let _n_embd = head_size * n_head;
+    let n_embd = head_size * n_head;
 
     // ==== Time-Mix (Attention) ====
     {
@@ -341,7 +353,13 @@ where
                 let data = download_f16_as_f32(x_ln, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttLayerNorm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttLayerNorm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -426,12 +444,19 @@ where
                 let xv_data = download_f16_as_f32(att_xv, stream)?;
                 let xa_data = download_f16_as_f32(att_xa, stream)?;
                 let xg_data = download_f16_as_f32(att_xg, stream)?;
-                let tensors: &[&[f32]] = &[&xr_data, &xw_data, &xk_data, &xv_data, &xa_data, &xg_data];
+                let tensors: &[&[f32]] =
+                    &[&xr_data, &xw_data, &xk_data, &xv_data, &xa_data, &xg_data];
                 let n_stack = tensors.len();
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
                 let stacked = stack_tensors(tensors, n_embd, actual_t, ps.t_stride, b);
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttTokenShift, &stacked, &[n_embd * n_stack, actual_t, b, 1]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttTokenShift,
+                    &stacked,
+                    &[n_embd * n_stack, actual_t, b, 1],
+                );
             }
         }
     }
@@ -456,7 +481,13 @@ where
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
                 let stacked = stack_tensors(tensors, n_embd, actual_t, ps.t_stride, b);
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttLinear, &stacked, &[n_embd * n_stack, actual_t, b, 1]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttLinear,
+                    &stacked,
+                    &[n_embd * n_stack, actual_t, b, 1],
+                );
             }
         }
     }
@@ -478,7 +509,13 @@ where
                 let data = download_f16_as_f32(att_w, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttDecay, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttDecay,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -499,7 +536,13 @@ where
                 let data = download_f16_as_f32(att_a, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttAdapt, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttAdapt,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -519,16 +562,20 @@ where
                 let data = download_f16_as_f32(att_g, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttGate, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttGate,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
 
     // Value residual (layers > 0)
     if layer_idx > 0 {
-        if let (Some(v0), Some(v1), Some(v2)) =
-            (&layer.att.v0, &layer.att.v1, &layer.att.v2)
-        {
+        if let (Some(v0), Some(v1), Some(v2)) = (&layer.att.v0, &layer.att.v1, &layer.att.v2) {
             {
                 ctx.hgemm_into(v1, att_xv, lora_v)?;
                 ctx.hgemm_into(v2, lora_v, v_lora2)?;
@@ -542,11 +589,20 @@ where
         #[cfg(feature = "hip-probes")]
         {
             if let Some(ref mut ps) = probe {
-                if ps.probes.contains_key(&probe::HipHook::PostAttValueResidual) {
+                if ps
+                    .probes
+                    .contains_key(&probe::HipHook::PostAttValueResidual)
+                {
                     let data = download_f16_as_f32(att_v, stream)?;
                     let actual_t = ps.ctx.seq_len;
                     let b = ps.ctx.batch_size;
-                    fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttValueResidual, &data, &[n_embd, actual_t, b]);
+                    fire_probe(
+                        ps.probes,
+                        ps.ctx,
+                        probe::HipHook::PostAttValueResidual,
+                        &data,
+                        &[n_embd, actual_t, b],
+                    );
                 }
             }
         }
@@ -568,7 +624,13 @@ where
                 let data = download_f16_as_f32(att_kk, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttL2Norm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttL2Norm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -586,7 +648,13 @@ where
                 let data = download_f16_as_f32(att_k_ctrl, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttControlK, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttControlK,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -626,12 +694,24 @@ where
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
                 let stacked = stack_tensors(tensors, n_embd, actual_t, ps.t_stride, b);
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PreWkv, &stacked, &[n_embd * n_stack, actual_t, b, 1]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PreWkv,
+                    &stacked,
+                    &[n_embd * n_stack, actual_t, b, 1],
+                );
             }
             if ps.probes.contains_key(&probe::HipHook::PreWkvState) {
                 let data = download_f32(wkv_state, stream)?;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PreWkvState, &data, &[head_size, head_size, n_head, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PreWkvState,
+                    &data,
+                    &[head_size, head_size, n_head, b],
+                );
             }
         }
     }
@@ -656,12 +736,24 @@ where
                 let data = download_f16_as_f32(wkv_out, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostWkv, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostWkv,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
             if ps.probes.contains_key(&probe::HipHook::PostWkvState) {
                 let data = download_f32(wkv_state, stream)?;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostWkvState, &data, &[head_size, head_size, n_head, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostWkvState,
+                    &data,
+                    &[head_size, head_size, n_head, b],
+                );
             }
         }
     }
@@ -687,7 +779,13 @@ where
                 let data = download_f16_as_f32(wkv_normed, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttGroupNorm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttGroupNorm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -715,7 +813,13 @@ where
                 let data = download_f16_as_f32(wkv_bonus, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostWkvBonus, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostWkvBonus,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -734,7 +838,13 @@ where
                 let data = download_f16_as_f32(temp2, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttGated, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttGated,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -752,7 +862,13 @@ where
                 let data = download_f16_as_f32(att_out, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAttOut, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAttOut,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -771,7 +887,13 @@ where
                 let data = download_f16_as_f32(x, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostAtt, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostAtt,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -792,7 +914,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn ffn_block(
     layer: &LayerHip,
-    _n_embd: usize,
+    n_embd: usize,
     // Core tensors
     x: &mut TensorHip<f16>,
     x_ln: &mut TensorHip<f16>,
@@ -816,7 +938,7 @@ pub fn ffn_block(
     // Optional probe state
     probe: &mut Option<ProbeState<'_>>,
 ) -> Result<()> {
-    let _ffn_hidden = layer.ffn.w_k.shape().dim(0); // ffn hidden dimension
+    let ffn_hidden = layer.ffn.w_k.shape().dim(0); // ffn hidden dimension
 
     // ==== Channel-Mix (FFN) ====
     {
@@ -838,7 +960,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(x_ln, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfnLayerNorm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfnLayerNorm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -868,7 +996,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(ffn_xk, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfnTokenShift, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfnTokenShift,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -886,7 +1020,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(ffn_k, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfnLinear, &data, &[ffn_hidden, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfnLinear,
+                    &data,
+                    &[ffn_hidden, actual_t, b],
+                );
             }
         }
     }
@@ -904,7 +1044,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(ffn_k_sq, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfnActivate, &data, &[ffn_hidden, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfnActivate,
+                    &data,
+                    &[ffn_hidden, actual_t, b],
+                );
             }
         }
     }
@@ -922,7 +1068,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(ffn_out, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfnOut, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfnOut,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -941,7 +1093,13 @@ pub fn ffn_block(
                 let data = download_f16_as_f32(x, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostFfn, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostFfn,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -972,14 +1130,7 @@ pub fn output_head(
     probe: &mut Option<ProbeState<'_>>,
 ) -> Result<()> {
     // ==== Output Head ====
-    layer_norm_f16(
-        x,
-        &head.ln.weight,
-        &head.ln.bias,
-        x_ln,
-        1e-5,
-        stream,
-    )?;
+    layer_norm_f16(x, &head.ln.weight, &head.ln.bias, x_ln, 1e-5, stream)?;
 
     // PostHeadLayerNorm probe
     #[cfg(feature = "hip-probes")]
@@ -989,7 +1140,13 @@ pub fn output_head(
                 let data = download_f16_as_f32(x_ln, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostHeadLayerNorm, &data, &[n_embd, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostHeadLayerNorm,
+                    &data,
+                    &[n_embd, actual_t, b],
+                );
             }
         }
     }
@@ -1004,7 +1161,13 @@ pub fn output_head(
                 let data = download_f16_as_f32(logits, stream)?;
                 let actual_t = ps.ctx.seq_len;
                 let b = ps.ctx.batch_size;
-                fire_probe(ps.probes, ps.ctx, probe::HipHook::PostHead, &data, &[n_vocab, actual_t, b]);
+                fire_probe(
+                    ps.probes,
+                    ps.ctx,
+                    probe::HipHook::PostHead,
+                    &data,
+                    &[n_vocab, actual_t, b],
+                );
             }
         }
     }
@@ -1017,10 +1180,7 @@ pub fn output_head(
     // logits tensor is sized for the actual T (max_len). Take a sub-slice.
     copy_f16_to_f32(logits, logits_f32, stream)?;
     let logits_len = logits_f32.len();
-    logits_f32.copy_to_slice_async(
-        &mut logits_staging.as_slice_mut()[..logits_len],
-        stream,
-    )?;
+    logits_f32.copy_to_slice_async(&mut logits_staging.as_slice_mut()[..logits_len], stream)?;
 
     Ok(())
 }

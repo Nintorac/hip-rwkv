@@ -20,26 +20,23 @@ use sha2::{Digest, Sha256};
 
 /// 64 short, engineering-flavored adjectives.
 const ADJECTIVES: [&str; 64] = [
-    "able", "bold", "calm", "dark", "eager", "fair", "glad", "hale",
-    "iron", "just", "keen", "lean", "mild", "neat", "open", "pale",
-    "quick", "rare", "safe", "taut", "used", "vast", "warm", "zero",
-    "agile", "brave", "clean", "dense", "exact", "firm", "great", "hard",
-    "ideal", "jolly", "known", "level", "major", "noble", "outer", "plain",
-    "rapid", "rigid", "sharp", "solid", "tight", "ultra", "vivid", "whole",
-    "amber", "blunt", "chief", "dry", "epic", "flat", "grey", "high",
-    "inner", "joint", "light", "mint", "new", "odd", "prime", "raw",
+    "able", "bold", "calm", "dark", "eager", "fair", "glad", "hale", "iron", "just", "keen",
+    "lean", "mild", "neat", "open", "pale", "quick", "rare", "safe", "taut", "used", "vast",
+    "warm", "zero", "agile", "brave", "clean", "dense", "exact", "firm", "great", "hard", "ideal",
+    "jolly", "known", "level", "major", "noble", "outer", "plain", "rapid", "rigid", "sharp",
+    "solid", "tight", "ultra", "vivid", "whole", "amber", "blunt", "chief", "dry", "epic", "flat",
+    "grey", "high", "inner", "joint", "light", "mint", "new", "odd", "prime", "raw",
 ];
 
 /// 64 short, engineering-flavored nouns.
 const NOUNS: [&str; 64] = [
-    "arch", "beam", "bolt", "brace", "cable", "cedar", "chain", "cliff",
-    "coil", "crane", "crest", "delta", "drift", "edge", "ember", "flint",
-    "forge", "frost", "gate", "grove", "haven", "helix", "hinge", "hull",
-    "ingot", "jade", "knot", "lance", "latch", "ledge", "lever", "lunar",
-    "marsh", "mesa", "nexus", "notch", "orbit", "oxide", "panel", "peak",
-    "pier", "plank", "pulse", "quartz", "ridge", "rivet", "rotor", "scale",
-    "shaft", "shelf", "slate", "spark", "spoke", "steel", "stone", "surge",
-    "torch", "truss", "valve", "vault", "wedge", "wheel", "yield", "zinc",
+    "arch", "beam", "bolt", "brace", "cable", "cedar", "chain", "cliff", "coil", "crane", "crest",
+    "delta", "drift", "edge", "ember", "flint", "forge", "frost", "gate", "grove", "haven",
+    "helix", "hinge", "hull", "ingot", "jade", "knot", "lance", "latch", "ledge", "lever", "lunar",
+    "marsh", "mesa", "nexus", "notch", "orbit", "oxide", "panel", "peak", "pier", "plank", "pulse",
+    "quartz", "ridge", "rivet", "rotor", "scale", "shaft", "shelf", "slate", "spark", "spoke",
+    "steel", "stone", "surge", "torch", "truss", "valve", "vault", "wedge", "wheel", "yield",
+    "zinc",
 ];
 
 /// Generate a deterministic human-readable name from a run ID.
@@ -132,10 +129,7 @@ mod tests {
             ADJECTIVES.contains(&parts[0]),
             "First word should be an adjective"
         );
-        assert!(
-            NOUNS.contains(&parts[1]),
-            "Second word should be a noun"
-        );
+        assert!(NOUNS.contains(&parts[1]), "Second word should be a noun");
     }
 
     #[test]
@@ -144,7 +138,10 @@ mod tests {
         let name2 = generate_human_name("run_b");
         // Different inputs should (very likely) produce different names
         // Not guaranteed but extremely likely with SHA-256
-        assert_ne!(name1, name2, "Different inputs should produce different names");
+        assert_ne!(
+            name1, name2,
+            "Different inputs should produce different names"
+        );
     }
 
     #[test]

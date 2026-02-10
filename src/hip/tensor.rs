@@ -43,7 +43,7 @@ impl TensorShape {
 
     /// Check if shape is empty.
     pub fn is_empty(&self) -> bool {
-        self.dims.iter().any(|&d| d == 0)
+        self.dims.contains(&0)
     }
 
     /// Get dimension at index.
@@ -512,11 +512,11 @@ impl<T: Copy> TensorHip<T> {
             });
         }
 
-        if self.len() == 0 {
+        if self.is_empty() {
             return Ok(());
         }
 
-        let size = self.len() * std::mem::size_of::<T>();
+        let size = std::mem::size_of_val(data);
         unsafe {
             check(hip_memcpy_h2d(
                 self.ptr as *mut c_void,
@@ -560,7 +560,7 @@ impl<T: Copy> TensorHip<T> {
             return Ok(());
         }
 
-        let size = data.len() * std::mem::size_of::<T>();
+        let size = std::mem::size_of_val(data);
         let dst = unsafe { self.ptr.add(offset) };
         unsafe {
             check(hip_memcpy_h2d(

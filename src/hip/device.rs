@@ -464,11 +464,9 @@ mod tests {
 
         assert!(!name.is_empty(), "Device name should not be empty");
 
-        if arch.contains("gfx1151") {
-            if warp_size > 0 {
-                assert_eq!(warp_size, 32, "gfx1151 should have warp size 32");
-                println!("  Verified gfx1151 warp size");
-            }
+        if arch.contains("gfx1151") && warp_size > 0 {
+            assert_eq!(warp_size, 32, "gfx1151 should have warp size 32");
+            println!("  Verified gfx1151 warp size");
         }
     }
 

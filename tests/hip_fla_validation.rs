@@ -13,10 +13,10 @@
 mod common;
 
 use common::{assert_tensors_close, TestFixture, Tolerances};
+use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, HipState, Rwkv7Hip};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, HipState, Rwkv7Hip};
 
 /// Storage for captured probe data, keyed by (hook, layer).
 type CapturedData = Arc<Mutex<HashMap<(HipHook, Option<usize>), Vec<f32>>>>;
@@ -438,10 +438,7 @@ fn compare_hook_t2(
         // ----- Normal hooks: split captured data at halfway for token 0 / token 1 -----
         let half = captured.len() / 2;
         if half == 0 {
-            println!(
-                "  [SKIP] {:?} layer={:?}: captured data empty",
-                hook, layer
-            );
+            println!("  [SKIP] {:?} layer={:?}: captured data empty", hook, layer);
             counters.record_skip();
             return;
         }
@@ -568,8 +565,7 @@ fn compare_token_against_fixture(
         }
 
         let expected = fixture.f32(key);
-        let result =
-            assert_tensors_close(token_data, expected, tolerances.rtol, tolerances.atol);
+        let result = assert_tensors_close(token_data, expected, tolerances.rtol, tolerances.atol);
         if result.is_ok() {
             counters.record_pass();
         } else {
@@ -649,14 +645,16 @@ fn test_fla_ground_truth_t2_chunked() {
         .expect("Failed to load model")
         .with_probes(probes);
     let rt_config = HipRuntimeConfig::new(256, 1);
-    let model = HipRuntime::with_config(model, rt_config)
-        .expect("Failed to configure runtime");
+    let model = HipRuntime::with_config(model, rt_config).expect("Failed to configure runtime");
 
     let n_layer = model.info().n_layer;
 
     println!(
         "Model: n_layer={}, n_embd={}, n_head={}, head_size={}",
-        n_layer, model.info().n_embd, model.info().n_head, model.info().head_size
+        n_layer,
+        model.info().n_embd,
+        model.info().n_head,
+        model.info().head_size
     );
     println!();
 

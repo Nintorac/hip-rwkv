@@ -25,10 +25,7 @@ pub enum SkipReason {
         max_token_chunk_size: u32,
     },
     /// Combination is known to fail
-    KnownFailure {
-        model_name: String,
-        backend: String,
-    },
+    KnownFailure { model_name: String, backend: String },
     /// Estimated memory usage would exceed available GPU memory
     OomPredicted {
         estimated_percent: u32,

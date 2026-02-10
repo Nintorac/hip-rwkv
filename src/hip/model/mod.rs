@@ -14,9 +14,7 @@ pub use decode::HipDecode;
 pub use hip_prefill::HipPrefill;
 // RecurrentWkv, WkvInput, WkvKernel are pub(crate) - not re-exported here
 pub use state::{HipState, StateLayout};
-pub use weights::{
-    AttentionHip, EmbedHip, FfnHip, HeadHip, LayerHip, LayerNormHip,
-};
+pub use weights::{AttentionHip, EmbedHip, FfnHip, HeadHip, LayerHip, LayerNormHip};
 
 use half::f16;
 use std::path::Path;
@@ -30,7 +28,7 @@ use super::scratch::{HipRuntimeConfig, LoraDims};
 use super::tensor::TensorHip;
 
 #[cfg(feature = "hip-probes")]
-use super::probe::{self, HipProbeMap, HipProbeMapRef};
+use super::probe::{HipProbeMap, HipProbeMapRef};
 
 /// Information about a loaded RWKV7 model.
 #[derive(Debug, Clone)]
@@ -94,11 +92,10 @@ pub struct Rwkv7Hip {
 impl std::fmt::Debug for Rwkv7Hip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Rwkv7Hip");
-        s.field("model", &self.model)
-            .field(
-                "scratch",
-                &self.scratch.lock().unwrap().as_ref().map(|_| "initialized"),
-            );
+        s.field("model", &self.model).field(
+            "scratch",
+            &self.scratch.lock().unwrap().as_ref().map(|_| "initialized"),
+        );
         #[cfg(feature = "hip-probes")]
         s.field(
             "probes",
@@ -533,24 +530,16 @@ impl Rwkv7Hip {
 
         let stream = scratch.blas_ctx.stream();
 
-        let att_states = HipState::read_batch_wkv(
-            &scratch.wkv_state_gpu,
-            batch_idx,
-            batch_size,
-            stream,
-        )?;
+        let att_states =
+            HipState::read_batch_wkv(&scratch.wkv_state_gpu, batch_idx, batch_size, stream)?;
         let att_shift_states = HipState::read_batch_att_shift(
             &scratch.att_shift_state_gpu,
             batch_idx,
             batch_size,
             stream,
         )?;
-        let ffn_states = HipState::read_batch_ffn(
-            &scratch.ffn_state_gpu,
-            batch_idx,
-            batch_size,
-            stream,
-        )?;
+        let ffn_states =
+            HipState::read_batch_ffn(&scratch.ffn_state_gpu, batch_idx, batch_size, stream)?;
 
         // Synchronize to ensure all D2H copies complete
         stream.synchronize()?;
@@ -621,4 +610,3 @@ impl Rwkv7Hip {
         Ok(())
     }
 }
-

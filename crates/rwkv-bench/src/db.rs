@@ -663,9 +663,9 @@ impl DbWriter {
         self.conn.execute_batch("DELETE FROM _cases")?;
 
         // Insert all expanded cases
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO _cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("INSERT INTO _cases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
         for c in cases {
             stmt.execute(params![
                 c.scenario,
@@ -687,9 +687,7 @@ impl DbWriter {
 
         // Built-in filters
         if skip.skip_batch_exceeds_model_max {
-            conditions.push(
-                "(max_batch_size IS NULL OR batch_size <= max_batch_size)".to_string(),
-            );
+            conditions.push("(max_batch_size IS NULL OR batch_size <= max_batch_size)".to_string());
         }
         if skip.skip_chunk_exceeds_model_max {
             conditions.push(
@@ -788,11 +786,8 @@ mod tests {
 
     fn temp_db_path() -> String {
         let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "test_db_{}_{}.db",
-            std::process::id(),
-            counter
-        ));
+        let path =
+            std::env::temp_dir().join(format!("test_db_{}_{}.db", std::process::id(), counter));
         // Clean up any existing file
         let _ = std::fs::remove_file(&path);
         path.to_string_lossy().to_string()
@@ -894,9 +889,11 @@ mod tests {
         // Verify the run was NOT persisted
         let conn = Connection::open(&path).unwrap();
         let count: i64 = conn
-            .query_row("SELECT count(*) FROM runs WHERE run_id = 'run_rollback'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM runs WHERE run_id = 'run_rollback'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
         let _ = std::fs::remove_file(&path);
@@ -1167,21 +1164,19 @@ mod tests {
         let path = temp_db_path();
         let db = DbWriter::open(&path).unwrap();
 
-        let cases = vec![
-            ExpandedCaseInput {
-                scenario: "decode_only".to_string(),
-                model_name: "rwkv7".to_string(),
-                model_sha: "sha1".to_string(),
-                backend: "wgpu/Vulkan".to_string(),
-                batch_size: 4,
-                token_chunk_size: 256,
-                seq_len: None,
-                decode_steps: Some(100),
-                max_batch_size: None,
-                max_token_chunk_size: Some(128), // chunk 256 > max 128
-                mixed_case_id: None,
-            },
-        ];
+        let cases = vec![ExpandedCaseInput {
+            scenario: "decode_only".to_string(),
+            model_name: "rwkv7".to_string(),
+            model_sha: "sha1".to_string(),
+            backend: "wgpu/Vulkan".to_string(),
+            batch_size: 4,
+            token_chunk_size: 256,
+            seq_len: None,
+            decode_steps: Some(100),
+            max_batch_size: None,
+            max_token_chunk_size: Some(128), // chunk 256 > max 128
+            mixed_case_id: None,
+        }];
 
         let skip = SqlSkipConditions {
             skip_chunk_exceeds_model_max: true,
@@ -1227,9 +1222,7 @@ mod tests {
         ];
 
         let skip = SqlSkipConditions {
-            custom_rules: vec![
-                "batch_size > 16 AND seq_len > 1024".to_string(),
-            ],
+            custom_rules: vec!["batch_size > 16 AND seq_len > 1024".to_string()],
             ..Default::default()
         };
         let result = db.query_cases(&cases, &skip).unwrap();
@@ -1274,9 +1267,7 @@ mod tests {
         ];
 
         let skip = SqlSkipConditions {
-            custom_rules: vec![
-                "model_name = 'rwkv_puzzle15' AND backend = 'hip'".to_string(),
-            ],
+            custom_rules: vec!["model_name = 'rwkv_puzzle15' AND backend = 'hip'".to_string()],
             ..Default::default()
         };
         let result = db.query_cases(&cases, &skip).unwrap();
@@ -1321,9 +1312,7 @@ mod tests {
         ];
 
         let skip = SqlSkipConditions {
-            custom_rules: vec![
-                "backend LIKE 'wgpu%' AND batch_size > 256".to_string(),
-            ],
+            custom_rules: vec!["backend LIKE 'wgpu%' AND batch_size > 256".to_string()],
             ..Default::default()
         };
         let result = db.query_cases(&cases, &skip).unwrap();
@@ -1449,9 +1438,7 @@ mod tests {
 
         let skip = SqlSkipConditions {
             skip_batch_exceeds_model_max: true,
-            custom_rules: vec![
-                "model_name = 'rwkv_puzzle15' AND backend = 'hip'".to_string(),
-            ],
+            custom_rules: vec!["model_name = 'rwkv_puzzle15' AND backend = 'hip'".to_string()],
             ..Default::default()
         };
         let result = db.query_cases(&cases, &skip).unwrap();

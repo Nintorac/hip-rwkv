@@ -403,7 +403,7 @@ extern "C" {
         v: *const f16,
         a: *const f16,
         b: *const f16,
-        state: *mut f32,     // in-place
+        state: *mut f32, // in-place
         output: *mut f16,
         lengths: *const c_int,
         n: c_int,
@@ -544,7 +544,6 @@ extern "C" {
         c: *mut f32,   // M×N matrix (FP32 output)
     ) -> RocblasStatus;
     pub fn rocblas_to_hip_error(status: RocblasStatus) -> HipError;
-
 
     // Full WKV7 GEMV implementation
     pub fn launch_wkv7_gemv(

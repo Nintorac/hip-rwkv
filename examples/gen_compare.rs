@@ -264,11 +264,9 @@ impl UnifiedRuntime {
             // Get output if any
             if output.0[0].0.shape()[1] > 0 {
                 let probs = match &self.runtime {
-                    BackendRuntime::Hip(_) => {
-                        hip_rwkv::hip::softmax_hip(output.0[0].0.clone())?
-                            .data()
-                            .to_vec()
-                    }
+                    BackendRuntime::Hip(_) => hip_rwkv::hip::softmax_hip(output.0[0].0.clone())?
+                        .data()
+                        .to_vec(),
                     BackendRuntime::Wgpu(_) => {
                         let ctx = self.context.as_ref().unwrap();
                         softmax_one(ctx, output.0[0].0.clone()).await?.to_vec()

@@ -194,7 +194,7 @@ impl HipDecode {
             for i in 0..n_layer {
                 // Upload CPU pinned -> temp GPU tensor
                 let src_data = state.att_states[i].as_slice();
-                let byte_count = src_data.len() * std::mem::size_of::<f32>();
+                let byte_count = std::mem::size_of_val(src_data);
                 unsafe {
                     check(hip_memcpy_h2d(
                         temp_wkv.as_mut_ptr() as *mut std::ffi::c_void,

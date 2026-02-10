@@ -286,7 +286,6 @@ pub struct PrefillScratch {
     // Pre-allocated for the 5-stage FLA pipeline. Shared across layers.
     // Sized for worst-case: max_total_chunks = batch_size * ceil_div(max_prefill_chunk, fla_chunk_size)
     // All buffers are f32 for FP32 precision (matching the plan's "FP32 state" requirement).
-
     /// Inclusive cumsum of intra-chunk decay (Stages 1+2 fused).
     /// Also serves as temporary storage for gk = -exp(att_w).
     /// Shape: `[head_size, n_head, max_prefill_chunk, batch_size]`
@@ -850,11 +849,7 @@ impl DecodeScratch {
     ///
     /// # Errors
     /// Returns error if GPU memory allocation fails.
-    pub fn new(
-        info: &Rwkv7ModelInfo,
-        lora_dims: LoraDims,
-        config: DecodeConfig,
-    ) -> Result<Self> {
+    pub fn new(info: &Rwkv7ModelInfo, lora_dims: LoraDims, config: DecodeConfig) -> Result<Self> {
         let t = 1; // T=1 always for decode
         let b = config.batch_size;
         let c = info.n_embd;

@@ -63,7 +63,6 @@ pub struct ChunkWkv {
     pub n_head: usize,
 
     // ---- FLA scratch buffer views (non-owning, pre-sized for current T, B) ----
-
     /// f32 inclusive cumsum output, shape [K, H, T, B]
     /// Also used as temporary storage for gk (neg_exp) before cumsum.
     pub fla_gi: TensorHip<f32>,
@@ -218,10 +217,8 @@ impl ChunkWkv {
         // Build batch_offsets for data addressing.
         // Packed layout: batch_offsets = cu_seqlens (no padding gaps).
         // Each sequence starts at cu_seqlens[b] in the packed time dimension.
-        let batch_offsets_host: Vec<i32> = cu_seqlens_host[..bb]
-            .iter()
-            .map(|&x| x as i32)
-            .collect();
+        let batch_offsets_host: Vec<i32> =
+            cu_seqlens_host[..bb].iter().map(|&x| x as i32).collect();
 
         // Compute chunk indices and offsets on CPU
         let chunk_indices_host = prepare_chunk_indices(&cu_seqlens_host, c);
@@ -241,11 +238,13 @@ impl ChunkWkv {
         // Upload small index buffers to GPU (temporary allocations -- these are
         // tiny: O(total_chunks) and O(B) elements respectively)
         let ci_shape = TensorShape::new(total_chunks * 2, 1, 1, 1);
-        let chunk_indices_gpu = TensorHip::<i32>::from_slice(&chunk_indices_flat, ci_shape, stream)?;
+        let chunk_indices_gpu =
+            TensorHip::<i32>::from_slice(&chunk_indices_flat, ci_shape, stream)?;
 
         let co_shape = TensorShape::new(n_seq + 1, 1, 1, 1);
         let chunk_offsets_flat: Vec<i32> = chunk_offsets_host.iter().map(|&x| x as i32).collect();
-        let chunk_offsets_gpu = TensorHip::<i32>::from_slice(&chunk_offsets_flat, co_shape, stream)?;
+        let chunk_offsets_gpu =
+            TensorHip::<i32>::from_slice(&chunk_offsets_flat, co_shape, stream)?;
 
         // cu_seqlens on GPU
         let cu_shape = TensorShape::new(bb + 1, 1, 1, 1);
@@ -254,7 +253,8 @@ impl ChunkWkv {
 
         // batch_offsets on GPU
         let bo_shape = TensorShape::new(bb, 1, 1, 1);
-        let batch_offsets_gpu = TensorHip::<i32>::from_slice(&batch_offsets_host, bo_shape, stream)?;
+        let batch_offsets_gpu =
+            TensorHip::<i32>::from_slice(&batch_offsets_host, bo_shape, stream)?;
 
         // ================================================================
         // Stage 0.5: Convert raw att_w (f16) to gk (f32) = -exp(att_w)
@@ -293,12 +293,12 @@ impl ChunkWkv {
         //   a = wkv_a = -kk (a in FLA)
         //   b = wkv_b = kk * att_a (b in FLA)
         fla_cumsum_intra(
-            &gk,                   // gk (log-decay, aliases fla_gi memory)
-            r,                     // q in FLA (receptance)
-            k,                     // k in FLA (controlled key)
-            a,                     // a in FLA (wkv_a = -kk)
-            b,                     // b in FLA (wkv_b = kk * att_a)
-            &mut self.fla_gi,      // gi output (also overwrites gk's memory)
+            &gk,              // gk (log-decay, aliases fla_gi memory)
+            r,                // q in FLA (receptance)
+            k,                // k in FLA (controlled key)
+            a,                // a in FLA (wkv_a = -kk)
+            b,                // b in FLA (wkv_b = kk * att_a)
+            &mut self.fla_gi, // gi output (also overwrites gk's memory)
             &mut self.fla_qg,
             &mut self.fla_kg,
             &mut self.fla_ag,

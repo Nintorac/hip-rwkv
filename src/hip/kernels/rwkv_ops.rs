@@ -3,14 +3,21 @@
 use half::f16;
 use std::ffi::c_int;
 
-use super::host_helpers::kernel_launch;
 use super::validation::{require_all_contiguous, require_contiguous_4, validate_unary_op};
 use crate::hip::device::Stream;
 use crate::hip::ffi::{
-    check, launch_channel_mix_state_f16, launch_channel_mix_state_f32, launch_control_k_f16,
-    launch_control_k_f32, launch_copy_f16_to_f32, launch_token_shift_f32,
+    check,
+    launch_channel_mix_state_f16,
+    launch_channel_mix_state_f32,
+    launch_control_k_f16,
+    launch_control_k_f32,
+    launch_copy_f16_to_f32,
+    launch_token_shift_f32,
     // WKV7 GEMV operations
-    launch_wkv7_gemv, HipErrorKind, Result, RocblasHandle,
+    launch_wkv7_gemv,
+    HipErrorKind,
+    Result,
+    RocblasHandle,
 };
 use crate::hip::tensor::{TensorHip, TensorShape};
 
@@ -49,7 +56,9 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "State shape mismatch: expected [{}, {}, 1, 1], got {}",
-                        c, b, state_in.shape()
+                        c,
+                        b,
+                        state_in.shape()
                     ),
                 });
             }
@@ -58,7 +67,8 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "x_k shape mismatch: expected [{}, 1, 1, 1], got {}",
-                        c, x_k.shape()
+                        c,
+                        x_k.shape()
                     ),
                 });
             }
@@ -67,7 +77,8 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "batch_offsets length mismatch: expected {}, got {}",
-                        b, batch_offsets.len()
+                        b,
+                        batch_offsets.len()
                     ),
                 });
             }
@@ -115,7 +126,9 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "State shape mismatch: expected [{}, {}, 1, 1], got {}",
-                        c, b, state_in.shape()
+                        c,
+                        b,
+                        state_in.shape()
                     ),
                 });
             }
@@ -124,7 +137,8 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "x_k shape mismatch: expected [{}, 1, 1, 1], got {}",
-                        c, x_k.shape()
+                        c,
+                        x_k.shape()
                     ),
                 });
             }
@@ -133,7 +147,8 @@ macro_rules! dual_precision_channel_mix_state {
                     code: -1,
                     message: format!(
                         "batch_offsets length mismatch: expected {}, got {}",
-                        b, batch_offsets.len()
+                        b,
+                        batch_offsets.len()
                     ),
                 });
             }
@@ -464,7 +479,12 @@ pub fn hip_channel_mix_state(
 
 // Control-K kernel (replacement key): output = k * (1 + (a - 1) * k_a)
 // Creates the replacement key for RWKV7 time mixing.
-dual_precision_control_k!(control_k_f32, control_k_f16, launch_control_k_f32, launch_control_k_f16);
+dual_precision_control_k!(
+    control_k_f32,
+    control_k_f16,
+    launch_control_k_f32,
+    launch_control_k_f16
+);
 
 /// Compute control-K on host data, returning results.
 /// This is a convenience function for testing.

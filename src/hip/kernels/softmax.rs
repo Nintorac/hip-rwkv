@@ -2,7 +2,6 @@
 
 use std::ffi::c_int;
 
-use super::host_helpers::kernel_launch;
 use crate::hip::buffer::DeviceBuffer;
 use crate::hip::device::Stream;
 use crate::hip::ffi::{check, launch_softmax_f32, Result};

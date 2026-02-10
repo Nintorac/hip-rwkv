@@ -20,7 +20,6 @@ fn ground_truth_fixtures_exist() -> bool {
         && Path::new("../tests/fixtures/ground_truth/step_0.npz").exists()
 }
 
-
 /// Test HIP model step against official rwkvfla ground truth.
 ///
 /// This is the primary validation that our HIP implementation matches
@@ -41,8 +40,8 @@ fn test_hip_against_ground_truth() {
     }
 
     // Load config to get token sequence
-    let config =
-        TestFixture::load("../tests/fixtures/ground_truth/config.npz").expect("Failed to load config");
+    let config = TestFixture::load("../tests/fixtures/ground_truth/config.npz")
+        .expect("Failed to load config");
     let tokens_i64 = config.i64("tokens");
     let n_steps = config.i64("n_steps")[0] as usize;
 
@@ -56,8 +55,7 @@ fn test_hip_against_ground_truth() {
         hip_rwkv::hip::Rwkv7Hip::load("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st")
             .expect("Failed to load model");
     let config = HipRuntimeConfig::new(256, 1);
-    let model = HipRuntime::with_config(model, config)
-        .expect("Failed to configure runtime");
+    let model = HipRuntime::with_config(model, config).expect("Failed to configure runtime");
 
     // State for streaming inference (starts as None, then chains through)
     let mut state: Option<hip_rwkv::hip::HipState> = None;
@@ -155,14 +153,6 @@ fn count_within_tolerance(
     (pass_count, actual.len(), max_diff)
 }
 
-
-
-
-
-
-
-
-
 /// Test that final logits produce expected next token prediction.
 ///
 /// After processing the full prompt, the model should predict a reasonable
@@ -175,8 +165,8 @@ fn test_ground_truth_final_prediction() {
     }
 
     // Load final step fixture
-    let config =
-        TestFixture::load("../tests/fixtures/ground_truth/config.npz").expect("Failed to load config");
+    let config = TestFixture::load("../tests/fixtures/ground_truth/config.npz")
+        .expect("Failed to load config");
     let n_steps = config.i64("n_steps")[0] as usize;
 
     let final_fixture = TestFixture::load(&format!(
@@ -216,4 +206,3 @@ const LOGIT_MIN_PASS_PCT: f64 = 60.0;
 
 /// Warning threshold for logit element pass percentage.
 const LOGIT_WARN_PASS_PCT: f64 = 99.0;
-

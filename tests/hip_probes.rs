@@ -4,9 +4,9 @@
 
 #![cfg(feature = "hip-probes")]
 
+use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, Rwkv7Hip};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, Rwkv7Hip};
 
 /// Test that probes capture intermediate values during step.
 #[test]
@@ -212,9 +212,7 @@ fn test_probe_with_masked_step() {
     let seq1 = vec![0u32, 1, 2]; // length 3
     let seq2 = vec![0u32, 1, 2, 3, 4]; // length 5
 
-    let (_logits, _state) = runtime
-        .step(&[&seq1, &seq2], None)
-        .expect("Step failed");
+    let (_logits, _state) = runtime.step(&[&seq1, &seq2], None).expect("Step failed");
 
     let captured = captured.lock().unwrap();
     let wkv_count = captured.get(&HipHook::PostWkv).copied().unwrap_or(0);

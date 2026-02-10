@@ -97,7 +97,10 @@ fn test_infer_token_count_exceeds_chunk_error() {
 
     let rt = make_runtime(4, 1);
     let result = rt.infer_one(&[1, 2, 3, 4, 5]);
-    assert!(result.is_err(), "Expected error for token count exceeding chunk");
+    assert!(
+        result.is_err(),
+        "Expected error for token count exceeding chunk"
+    );
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -118,7 +121,10 @@ fn test_infer_multi_batch_exceeds_chunk_error() {
 
     let rt = make_runtime(4, 2);
     let result = rt.infer(&[&[1, 2, 3], &[4, 5]]);
-    assert!(result.is_err(), "Expected error for multi-batch token count exceeding chunk");
+    assert!(
+        result.is_err(),
+        "Expected error for multi-batch token count exceeding chunk"
+    );
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -139,7 +145,10 @@ fn test_step_decode_batch_exceeds_max_error() {
 
     let rt = make_runtime(256, 1);
     let result = rt.step(&[&[1], &[2]], None);
-    assert!(result.is_err(), "Expected error for decode batch exceeding max");
+    assert!(
+        result.is_err(),
+        "Expected error for decode batch exceeding max"
+    );
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(

@@ -64,7 +64,6 @@ pub trait WkvKernel: Send + Sync {
         output: &mut TensorHip<f16>,
         stream: &Stream,
     ) -> Result<()>;
-
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +90,7 @@ impl WkvKernel for RecurrentWkv {
             input.v,
             input.a,
             input.b,
-            state,  // in-place state update
+            state, // in-place state update
             output,
             input.lengths,
             stream,

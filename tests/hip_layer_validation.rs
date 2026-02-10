@@ -12,10 +12,10 @@
 mod common;
 
 use common::{assert_tensors_close, TestFixture, Tolerances};
+use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, HipState, Rwkv7Hip};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use hip_rwkv::hip::{HipHook, HipProbeBuilder, HipRuntime, HipRuntimeConfig, HipState, Rwkv7Hip};
 
 /// Result of a single tensor comparison.
 struct ValidationResult {
@@ -348,8 +348,8 @@ fn test_hip_layer_by_layer_step0() {
     let fixture = TestFixture::load(fixture_path).expect("Failed to load fixture");
 
     // Load config to get token
-    let config =
-        TestFixture::load("../tests/fixtures/ground_truth/config.npz").expect("Failed to load config");
+    let config = TestFixture::load("../tests/fixtures/ground_truth/config.npz")
+        .expect("Failed to load config");
     let token = config.i64("tokens")[0] as u32;
 
     println!(
@@ -365,15 +365,12 @@ fn test_hip_layer_by_layer_step0() {
         .expect("Failed to load model")
         .with_probes(probes);
     let config = HipRuntimeConfig::new(256, 1);
-    let model = HipRuntime::with_config(model, config)
-        .expect("Failed to configure runtime");
+    let model = HipRuntime::with_config(model, config).expect("Failed to configure runtime");
 
     let n_layer = model.info().n_layer;
 
     // Run step
-    let (_logits, _state) = model
-        .step(&[&[token]], None)
-        .expect("Step failed");
+    let (_logits, _state) = model.step(&[&[token]], None).expect("Step failed");
 
     // Validate all captured values
     let captured = captured.lock().unwrap();
@@ -554,8 +551,7 @@ fn test_probe_coverage() {
         .expect("Failed to load model")
         .with_probes(probes);
     let config = HipRuntimeConfig::new(256, 1);
-    let model = HipRuntime::with_config(model, config)
-        .expect("Failed to configure runtime");
+    let model = HipRuntime::with_config(model, config).expect("Failed to configure runtime");
 
     let n_layer = model.info().n_layer;
 
@@ -653,8 +649,8 @@ fn test_hip_divergence_progression() {
         return;
     }
 
-    let config =
-        TestFixture::load("../tests/fixtures/ground_truth/config.npz").expect("Failed to load config");
+    let config = TestFixture::load("../tests/fixtures/ground_truth/config.npz")
+        .expect("Failed to load config");
     let tokens_i64 = config.i64("tokens");
     let n_steps = (config.i64("n_steps")[0] as usize).min(5); // Test first 5 steps
 
@@ -666,8 +662,7 @@ fn test_hip_divergence_progression() {
     // Load model (without probes for speed)
     let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
     let config = HipRuntimeConfig::new(256, 1);
-    let model = HipRuntime::with_config(model, config)
-        .expect("Failed to configure runtime");
+    let model = HipRuntime::with_config(model, config).expect("Failed to configure runtime");
     let mut state: Option<HipState> = None;
 
     for step in 0..n_steps {

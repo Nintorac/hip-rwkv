@@ -206,24 +206,16 @@ impl HipPrefill {
         let head_size = self.model.info.head_size;
         let stream = self.scratch.blas_ctx.stream();
 
-        let fla_att_states = HipState::read_batch_wkv(
-            &self.scratch.wkv_state_gpu,
-            batch_idx,
-            batch_size,
-            stream,
-        )?;
+        let fla_att_states =
+            HipState::read_batch_wkv(&self.scratch.wkv_state_gpu, batch_idx, batch_size, stream)?;
         let att_shift_states = HipState::read_batch_att_shift(
             &self.scratch.att_shift_state_gpu,
             batch_idx,
             batch_size,
             stream,
         )?;
-        let ffn_states = HipState::read_batch_ffn(
-            &self.scratch.ffn_state_gpu,
-            batch_idx,
-            batch_size,
-            stream,
-        )?;
+        let ffn_states =
+            HipState::read_batch_ffn(&self.scratch.ffn_state_gpu, batch_idx, batch_size, stream)?;
 
         stream.synchronize()?;
 
@@ -436,7 +428,7 @@ impl HipPrefill {
 
             for i in 0..n_layer {
                 let src_data = state.att_states[i].as_slice();
-                let byte_count = src_data.len() * std::mem::size_of::<f32>();
+                let byte_count = std::mem::size_of_val(src_data);
                 unsafe {
                     check(hip_memcpy_h2d(
                         temp_wkv.as_mut_ptr() as *mut std::ffi::c_void,

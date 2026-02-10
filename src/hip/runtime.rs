@@ -20,8 +20,6 @@ use super::model::{HipDecode, HipPrefill, Rwkv7Model};
 use super::scratch::{DecodeConfig, HipRuntimeConfig, PrefillConfig};
 use super::{HipState, Rwkv7Hip, Rwkv7ModelInfo};
 
-#[cfg(feature = "hip-probes")]
-use super::probe::{HipProbeMap, HipProbeMapRef};
 use web_rwkv::runtime::{
     infer::{Rnn, RnnInput, RnnOutput, RnnOutputBatch, RnnRedirect, Token},
     JobInput, Runtime, RuntimeError,
@@ -43,7 +41,7 @@ use web_rwkv::tensor::{
 /// Tensor with same shape, where each column sums to 1.0
 pub fn softmax_hip(input: TensorCpu<f32>) -> Result<TensorCpu<f32>, HipErrorKind> {
     let shape = input.shape();
-    if shape.len() == 0 {
+    if shape.is_empty() {
         return Ok(input);
     }
     let vocab_size = shape[0];
@@ -67,9 +65,7 @@ pub fn softmax_hip(input: TensorCpu<f32>) -> Result<TensorCpu<f32>, HipErrorKind
 }
 
 /// Batched GPU softmax -- processes multiple tensors.
-pub fn softmax_hip_batch(
-    inputs: Vec<TensorCpu<f32>>,
-) -> Result<Vec<TensorCpu<f32>>, HipErrorKind> {
+pub fn softmax_hip_batch(inputs: Vec<TensorCpu<f32>>) -> Result<Vec<TensorCpu<f32>>, HipErrorKind> {
     inputs.into_iter().map(softmax_hip).collect()
 }
 
@@ -350,9 +346,7 @@ impl HipRuntime {
     /// `HipDecode` (which transposes WKV state to decode layout).
     ///
     /// Caller must hold the inner lock.
-    fn transfer_state_to_decode(
-        inner: &mut HipRuntimeInner,
-    ) -> Result<(), super::HipErrorKind> {
+    fn transfer_state_to_decode(inner: &mut HipRuntimeInner) -> Result<(), super::HipErrorKind> {
         let state = inner.prefill.get_state()?;
         inner.decode.load_state(&state)?;
         inner.needs_state_transfer = false;
@@ -593,7 +587,7 @@ impl HipRuntime {
             if num_out_tokens == 0 {
                 outputs.push(RnnOutputBatch(
                     TensorInit::from_data(Shape::new(vocab_size, 0, 1, 1), vec![])
-                        .map_err(|e| RuntimeError::TensorError(e))?,
+                        .map_err(RuntimeError::TensorError)?,
                 ));
             } else {
                 let start = out_start * vocab_size;
@@ -604,7 +598,7 @@ impl HipRuntime {
                         Shape::new(vocab_size, num_out_tokens, 1, 1),
                         batch_logits,
                     )
-                    .map_err(|e| RuntimeError::TensorError(e))?,
+                    .map_err(RuntimeError::TensorError)?,
                 ));
             }
         }
@@ -645,9 +639,9 @@ impl HipRuntime {
         let token_refs: Vec<&[u32]> = token_vecs.iter().map(|v| v.as_slice()).collect();
 
         // 4. Run step (infer takes &self, uses Mutex internally)
-        let logits_tensor = self.infer(&token_refs).map_err(|_| {
-            RuntimeError::TensorError(TensorError::new(TensorErrorKind::Deduce))
-        })?;
+        let logits_tensor = self
+            .infer(&token_refs)
+            .map_err(|_| RuntimeError::TensorError(TensorError::new(TensorErrorKind::Deduce)))?;
 
         // 5. Extract outputs based on redirect (Last vs Full per batch)
         let output = self.extract_rnn_outputs(&logits_tensor, &redirect)?;
@@ -668,11 +662,15 @@ impl Runtime<Rnn> for HipRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use web_rwkv::tensor::shape::Shape;
     use std::path::Path;
+    use web_rwkv::tensor::shape::Shape;
 
     #[cfg(feature = "tokio")]
     use {
+        half::f16,
+        memmap2::Mmap,
+        safetensors::SafeTensors,
+        std::fs::File,
         web_rwkv::{
             context::{ContextBuilder, InstanceExt},
             runtime::{
@@ -682,10 +680,6 @@ mod tests {
                 v7, Runtime as RuntimeTrait, TokioRuntime,
             },
         },
-        half::f16,
-        memmap2::Mmap,
-        safetensors::SafeTensors,
-        std::fs::File,
     };
 
     #[test]
@@ -1675,8 +1669,8 @@ mod tests {
     /// Last-token logits match a direct single-call inference.
     #[test]
     fn test_hip_runtime_multichunk_prefill_with_empty_batches() {
-        use web_rwkv::runtime::infer::{RnnInput, RnnInputBatch, RnnOption};
         use web_rwkv::runtime::infer::rnn::RnnOutput;
+        use web_rwkv::runtime::infer::{RnnInput, RnnInputBatch, RnnOption};
 
         let model_path = "/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st";
         if !Path::new(model_path).exists() {
@@ -1726,9 +1720,9 @@ mod tests {
             if input.num_token() == 0 {
                 break;
             }
-            let (remaining, output) = runtime_rnn
-                .infer_rnn(input)
-                .unwrap_or_else(|e| panic!("Chunked inference failed on chunk {}: {:?}", chunk_count, e));
+            let (remaining, output) = runtime_rnn.infer_rnn(input).unwrap_or_else(|e| {
+                panic!("Chunked inference failed on chunk {}: {:?}", chunk_count, e)
+            });
             chunk_count += 1;
             final_output = Some(output);
             input = remaining;
@@ -1742,12 +1736,18 @@ mod tests {
 
         // The last chunk's output should contain batch 0's Last logits
         let output = final_output.expect("Should have produced output");
-        assert_eq!(output.0.len(), num_batch, "Should have {} batch outputs", num_batch);
+        assert_eq!(
+            output.0.len(),
+            num_batch,
+            "Should have {} batch outputs",
+            num_batch
+        );
 
         // Batch 0: Last option → should have exactly 1 output token
         let batch0_out = &output.0[0].0;
         assert_eq!(
-            batch0_out.shape()[1], 1,
+            batch0_out.shape()[1],
+            1,
             "Batch 0 with Last should have 1 output token, got {}",
             batch0_out.shape()[1]
         );
@@ -1755,7 +1755,8 @@ mod tests {
         // Batches 1-3: empty → should have 0 output tokens
         for i in 1..num_batch {
             assert_eq!(
-                output.0[i].0.shape()[1], 0,
+                output.0[i].0.shape()[1],
+                0,
                 "Empty batch {} should have 0 output tokens",
                 i
             );
@@ -1763,12 +1764,15 @@ mod tests {
 
         // Compare batch 0's logits against direct inference last-token logits
         let rnn_last = batch0_out.data();
-        assert_eq!(rnn_last.len(), vocab_size, "Output should be vocab_size logits");
+        assert_eq!(
+            rnn_last.len(),
+            vocab_size,
+            "Output should be vocab_size logits"
+        );
 
         // Top-k comparison
         let top_k = |logits: &[f32], k: usize| -> Vec<usize> {
-            let mut indexed: Vec<(usize, f32)> =
-                logits.iter().copied().enumerate().collect();
+            let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
             indexed.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
             indexed.into_iter().take(k).map(|(i, _)| i).collect()
         };
@@ -1790,7 +1794,9 @@ mod tests {
         assert!(
             overlap >= 8,
             "Top-10 overlap too low: {}/10 (rnn={:?}, direct={:?})",
-            overlap, rnn_top10, direct_top10
+            overlap,
+            rnn_top10,
+            direct_top10
         );
 
         println!("test_hip_runtime_multichunk_prefill_with_empty_batches PASSED");
@@ -1844,7 +1850,9 @@ mod tests {
             .expect("Failed to create ground truth runtime");
 
         let gt_refs: Vec<&[u32]> = batch_tokens.iter().map(|v| v.as_slice()).collect();
-        let gt_logits = runtime_gt.infer(&gt_refs).expect("Ground truth inference failed");
+        let gt_logits = runtime_gt
+            .infer(&gt_refs)
+            .expect("Ground truth inference failed");
 
         // Extract last-token logits for each batch from ground truth
         let lengths: Vec<usize> = batch_tokens.iter().map(|v| v.len()).collect();
@@ -1885,8 +1893,7 @@ mod tests {
 
         // Compare batch 0 logits: ground truth vs test path
         let top_k = |logits: &[f32], k: usize| -> Vec<usize> {
-            let mut indexed: Vec<(usize, f32)> =
-                logits.iter().copied().enumerate().collect();
+            let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
             indexed.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
             indexed.into_iter().take(k).map(|(i, _)| i).collect()
         };
@@ -1945,8 +1952,8 @@ mod tests {
         // Runtime A: process prefix on batch 0
         let model_a = Rwkv7Hip::load(model_path).expect("Failed to load model");
         let config_a = HipRuntimeConfig::new(chunk_size, num_batch);
-        let runtime_a = HipRuntime::with_config(model_a, config_a)
-            .expect("Failed to create runtime A");
+        let runtime_a =
+            HipRuntime::with_config(model_a, config_a).expect("Failed to create runtime A");
 
         let refs_prefix: Vec<&[u32]> = vec![
             prefix_tokens.as_slice(),
@@ -1967,8 +1974,8 @@ mod tests {
         // Runtime B: load batch 0's state into batch 2
         let model_b = Rwkv7Hip::load(model_path).expect("Failed to load model");
         let config_b = HipRuntimeConfig::new(chunk_size, num_batch);
-        let runtime_b = HipRuntime::with_config(model_b, config_b)
-            .expect("Failed to create runtime B");
+        let runtime_b =
+            HipRuntime::with_config(model_b, config_b).expect("Failed to create runtime B");
 
         runtime_b
             .load_state_batch(2, &state_b0)
@@ -1998,31 +2005,19 @@ mod tests {
         // Extract last-token logits for the non-empty batches.
         // Runtime A: only batch 0 has tokens, so extract_last_logits with just [len]
         // Runtime B: only batch 2 has tokens, so extract_last_logits with just [len]
-        let last_a = runtime_a.extract_last_logits(
-            &logits_a,
-            &[suffix_tokens.len()],
-        );
-        let last_b = runtime_b.extract_last_logits(
-            &logits_b,
-            &[suffix_tokens.len()],
-        );
+        let last_a = runtime_a.extract_last_logits(&logits_a, &[suffix_tokens.len()]);
+        let last_b = runtime_b.extract_last_logits(&logits_b, &[suffix_tokens.len()]);
 
         // Compare: runtime A batch 0 vs runtime B batch 2
         let top_k = |logits: &[f32], k: usize| -> Vec<usize> {
-            let mut indexed: Vec<(usize, f32)> =
-                logits.iter().copied().enumerate().collect();
-            indexed.sort_by(|(_, a), (_, b)| {
-                b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+            indexed.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
             indexed.into_iter().take(k).map(|(i, _)| i).collect()
         };
 
         let top10_a = top_k(&last_a[0], 10);
         let top10_b = top_k(&last_b[0], 10);
-        let overlap = top10_a
-            .iter()
-            .filter(|i| top10_b.contains(i))
-            .count();
+        let overlap = top10_a.iter().filter(|i| top10_b.contains(i)).count();
 
         println!("test_state_batch_roundtrip_different_slots:");
         println!("  Runtime A batch 0 top-10: {:?}", top10_a);

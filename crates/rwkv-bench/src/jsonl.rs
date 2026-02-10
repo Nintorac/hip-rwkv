@@ -667,11 +667,7 @@ impl JsonlWriter {
     ///
     /// Use this for append mode where multiple runs may be written to the same file.
     pub fn open_append(path: &Path) -> JsonlResult<Self> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         Ok(Self {
             writer: BufWriter::new(file),
@@ -868,7 +864,7 @@ pub fn generate_timestamp_utc() -> String {
 
 /// Round a token chunk size to the nearest multiple of 32 (as required by web-rwkv).
 pub fn round_chunk_size(requested: u32) -> u32 {
-    ((requested + 31) / 32) * 32
+    requested.div_ceil(32) * 32
 }
 
 #[cfg(test)]

@@ -328,11 +328,7 @@ pub(super) fn load_layers(
 
             // Value residual LoRA (only for layers > 0)
             v0: if layer_idx > 0 {
-                Some(load_tensor_f16(
-                    st,
-                    &format!("{}.att.v0", prefix),
-                    stream,
-                )?)
+                Some(load_tensor_f16(st, &format!("{}.att.v0", prefix), stream)?)
             } else {
                 None
             },
@@ -359,18 +355,10 @@ pub(super) fn load_layers(
             k_k: load_tensor_f16(st, &format!("{}.att.k_k", prefix), stream)?,
             k_a: load_tensor_f16(st, &format!("{}.att.k_a", prefix), stream)?,
 
-            w_r: load_weight_matrix_f16(
-                st,
-                &format!("{}.att.receptance.weight", prefix),
-                stream,
-            )?,
+            w_r: load_weight_matrix_f16(st, &format!("{}.att.receptance.weight", prefix), stream)?,
             w_k: load_weight_matrix_f16(st, &format!("{}.att.key.weight", prefix), stream)?,
             w_v: load_weight_matrix_f16(st, &format!("{}.att.value.weight", prefix), stream)?,
-            w_o: load_weight_matrix_f16(
-                st,
-                &format!("{}.att.output.weight", prefix),
-                stream,
-            )?,
+            w_o: load_weight_matrix_f16(st, &format!("{}.att.output.weight", prefix), stream)?,
 
             gn: load_layer_norm(st, &format!("{}.att.ln_x", prefix), stream)?,
         };

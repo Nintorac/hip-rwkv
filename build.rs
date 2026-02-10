@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -29,7 +30,7 @@ fn build_hip_kernels() {
     println!("cargo:rustc-link-lib=dylib=hipblaslt");
 }
 
-fn compile_hip_kernels(rocm_path: &PathBuf, out_dir: &PathBuf) {
+fn compile_hip_kernels(rocm_path: &Path, out_dir: &Path) {
     let hipcc = rocm_path.join("bin/hipcc");
     let kernel_dir = PathBuf::from("src/hip/kernels");
 
@@ -37,7 +38,7 @@ fn compile_hip_kernels(rocm_path: &PathBuf, out_dir: &PathBuf) {
         .expect("Failed to read kernel directory")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "hip"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "hip"))
         .collect();
 
     if hip_files.is_empty() {

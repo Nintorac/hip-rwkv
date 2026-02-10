@@ -93,23 +93,19 @@ fn spearman_correlation(a: &[f32], b: &[f32]) -> f64 {
 }
 
 /// Load model and create a HipRuntime with given chunk size and batch size.
-fn make_runtime(
-    chunk: usize,
-    batch: usize,
-) -> hip_rwkv::hip::HipRuntime {
+fn make_runtime(chunk: usize, batch: usize) -> hip_rwkv::hip::HipRuntime {
     use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig, Rwkv7Hip};
 
-    let model =
-        Rwkv7Hip::load("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st")
-            .expect("Failed to load model");
+    let model = Rwkv7Hip::load("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st")
+        .expect("Failed to load model");
     let config = HipRuntimeConfig::new(chunk, batch);
     HipRuntime::with_config(model, config).expect("Failed to configure runtime")
 }
 
 /// Load fixture tokens and n_steps from config.npz.
 fn load_fixture_tokens() -> (Vec<u32>, usize) {
-    let config =
-        TestFixture::load("../tests/fixtures/ground_truth/config.npz").expect("Failed to load config");
+    let config = TestFixture::load("../tests/fixtures/ground_truth/config.npz")
+        .expect("Failed to load config");
     let tokens_i64 = config.i64("tokens");
     let n_steps = config.i64("n_steps")[0] as usize;
     let tokens: Vec<u32> = tokens_i64.iter().map(|&t| t as u32).collect();
@@ -152,8 +148,8 @@ fn test_multi_batch_determinism() {
 
     // Compare slot 0 vs slot 1 for each token position
     for t in 0..len {
-        let offset_0 = t * n_vocab;               // batch 0 starts at 0
-        let offset_1 = (len + t) * n_vocab;       // batch 1 starts at len * n_vocab
+        let offset_0 = t * n_vocab; // batch 0 starts at 0
+        let offset_1 = (len + t) * n_vocab; // batch 1 starts at len * n_vocab
         let slot0 = &logits[offset_0..offset_0 + n_vocab];
         let slot1 = &logits[offset_1..offset_1 + n_vocab];
 
@@ -164,7 +160,10 @@ fn test_multi_batch_determinism() {
         );
     }
 
-    println!("test_multi_batch_determinism: PASS (B=2, {} tokens, exact equality)", len);
+    println!(
+        "test_multi_batch_determinism: PASS (B=2, {} tokens, exact equality)",
+        len
+    );
 }
 
 /// B=2 quality against ground truth via step() API, parameterized by chunk size.
@@ -220,9 +219,11 @@ fn test_multi_batch_quality(chunk_size: usize) {
                 top1_matches += 1;
             }
             assert_eq!(
-                top_k_indices(slot1, 1)[0], expected_top1,
+                top_k_indices(slot1, 1)[0],
+                expected_top1,
                 "Slot1 top-1 mismatch at step {} (chunk_size={})",
-                step_idx, chunk_size
+                step_idx,
+                chunk_size
             );
 
             // Spearman against ground truth for both slots
@@ -232,7 +233,9 @@ fn test_multi_batch_quality(chunk_size: usize) {
             assert!(
                 rho1 >= 0.999,
                 "Slot1 Spearman {:.6} < 0.999 at step {} (chunk_size={})",
-                rho1, step_idx, chunk_size
+                rho1,
+                step_idx,
+                chunk_size
             );
         }
 
@@ -341,11 +344,7 @@ fn test_multi_batch_mixed_lengths() {
         "Long seq top-5 overlap {:.2} < 0.8",
         long_top5_overlap
     );
-    assert!(
-        long_rho >= 0.99,
-        "Long seq Spearman {:.6} < 0.99",
-        long_rho
-    );
+    assert!(long_rho >= 0.99, "Long seq Spearman {:.6} < 0.99", long_rho);
 
     // Compare short sequence last-token logits
     let short_top5_overlap = top_k_overlap(
@@ -390,7 +389,9 @@ fn test_long_sequence_no_panic() {
 
     {
         let rt = make_runtime(256, 1);
-        let logits = rt.infer_one(&long_tokens).expect("infer_one failed for 256 tokens");
+        let logits = rt
+            .infer_one(&long_tokens)
+            .expect("infer_one failed for 256 tokens");
         let logits_data: &[f32] = &logits;
 
         for (i, &v) in logits_data.iter().enumerate() {
@@ -417,15 +418,13 @@ fn test_long_sequence_no_panic() {
             assert!(
                 v.is_finite(),
                 "Non-finite logit at chunk pos {}, index {}: {}",
-                pos, i, v
+                pos,
+                i,
+                v
             );
         }
         let any_nonzero = chunk_logits.iter().any(|&v| v != 0.0);
-        assert!(
-            any_nonzero,
-            "All logits zero at chunk starting pos {}",
-            pos
-        );
+        assert!(any_nonzero, "All logits zero at chunk starting pos {}", pos);
         pos = end;
     }
 
@@ -453,9 +452,7 @@ fn test_long_sequence_determinism() {
     // Run 1
     let logits1 = {
         let rt1 = make_runtime(256, 1);
-        let (logits, _state) = rt1
-            .step(&[&long_tokens], None)
-            .expect("step run 1 failed");
+        let (logits, _state) = rt1.step(&[&long_tokens], None).expect("step run 1 failed");
         logits
         // rt1 dropped here
     };
@@ -463,9 +460,7 @@ fn test_long_sequence_determinism() {
     // Run 2 (fresh runtime, same model)
     let logits2 = {
         let rt2 = make_runtime(256, 1);
-        let (logits, _state) = rt2
-            .step(&[&long_tokens], None)
-            .expect("step run 2 failed");
+        let (logits, _state) = rt2.step(&[&long_tokens], None).expect("step run 2 failed");
         logits
         // rt2 dropped here
     };
@@ -530,26 +525,23 @@ fn test_state_continuity_across_chunks() {
     };
 
     // Compare
-    let overlap = top_k_overlap(
-        &top_k_indices(&all_last, 5),
-        &top_k_indices(&split_last, 5),
-    );
+    let overlap = top_k_overlap(&top_k_indices(&all_last, 5), &top_k_indices(&split_last, 5));
     let rho = spearman_correlation(&all_last, &split_last);
 
     println!(
         "state_continuity (T={}, split={}+{}): top-5 overlap={:.2}, rho={:.6}",
-        total_len, split, total_len - split, overlap, rho
+        total_len,
+        split,
+        total_len - split,
+        overlap,
+        rho
     );
     assert!(
         overlap >= 0.8,
         "State continuity top-5 overlap {:.2} < 0.8",
         overlap
     );
-    assert!(
-        rho >= 0.999,
-        "State continuity Spearman {:.6} < 0.999",
-        rho
-    );
+    assert!(rho >= 0.999, "State continuity Spearman {:.6} < 0.999", rho);
 
     println!("test_state_continuity_across_chunks: PASS");
 }

@@ -154,8 +154,8 @@ pub fn seq_len_from_total_tokens(total_tokens: u32, batch_size: u32) -> u32 {
     if batch_size == 0 {
         return 0;
     }
-    // ceil(T / B) = (T + B - 1) / B
-    (total_tokens + batch_size - 1) / batch_size
+    // ceil(T / B)
+    total_tokens.div_ceil(batch_size)
 }
 
 /// Generates sequence lengths for target mode.
@@ -410,7 +410,7 @@ pub fn compute_ttft_stats(ttft_values: &[f64]) -> (f64, f64, f64) {
     let max = sorted[sorted.len() - 1];
 
     // Compute median (p50)
-    let median = if sorted.len() % 2 == 0 {
+    let median = if sorted.len().is_multiple_of(2) {
         let mid = sorted.len() / 2;
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
@@ -603,7 +603,7 @@ impl PrefillUniformConfig {
         if self.token_chunk_size == 0 {
             return 0;
         }
-        (self.seq_len + self.token_chunk_size - 1) / self.token_chunk_size
+        self.seq_len.div_ceil(self.token_chunk_size)
     }
 }
 

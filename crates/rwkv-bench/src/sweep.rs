@@ -1053,10 +1053,7 @@ mod tests {
         assert_eq!(cases.len(), 2);
 
         // Check backend variants
-        let backends: Vec<_> = cases
-            .iter()
-            .map(|c| c.params.backend.clone())
-            .collect();
+        let backends: Vec<_> = cases.iter().map(|c| c.params.backend.clone()).collect();
         assert!(backends.contains(&"wgpu/Vulkan".to_string()));
         assert!(backends.contains(&"wgpu/Dx12".to_string()));
     }

@@ -272,7 +272,7 @@ fn get_ram_gb() -> Option<f64> {
                 for line in content.lines() {
                     if let Some(rest) = line.strip_prefix("MemTotal:") {
                         // Parse "12345678 kB"
-                        let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
                         if let Some(kb_str) = parts.first() {
                             if let Ok(kb) = kb_str.parse::<u64>() {
                                 return Some(kb as f64 / 1024.0 / 1024.0);
@@ -425,8 +425,8 @@ fn try_nvidia_smi() -> Option<GpuInfo> {
 /// Extract GPU name from a rocm-smi output line.
 ///
 /// Handles formats like:
-/// - "GPU[0]		: Card Series: 		AMD Radeon 8060S"
-/// - "Card series:		AMD Radeon RX 7900 XTX"
+/// - "GPU[0]        : Card Series:         AMD Radeon 8060S"
+/// - "Card series:        AMD Radeon RX 7900 XTX"
 fn extract_gpu_name_from_rocm_line(line: &str) -> Option<String> {
     // Look for "Card Series:" or "Card series:" marker
     let lower = line.to_lowercase();

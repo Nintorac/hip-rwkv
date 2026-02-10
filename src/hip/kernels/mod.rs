@@ -23,10 +23,10 @@ pub use wkv::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use half::f16;
     use crate::hip::device::Stream;
-    use crate::hip::tensor::TensorShape;
     use crate::hip::tensor::TensorHip;
+    use crate::hip::tensor::TensorShape;
+    use half::f16;
 
     /// Test that copy_f16_to_f32 correctly converts f16 to f32 on GPU
     #[test]
