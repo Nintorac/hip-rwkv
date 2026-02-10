@@ -46,6 +46,22 @@ pub fn fla_chunk_size_from_env() -> usize {
     }
 }
 
+/// Controls which inference modules are allocated by `HipRuntime`.
+///
+/// - `Both` (default): allocates both `HipPrefill` and `HipDecode` for mixed workloads.
+/// - `DecodeOnly`: allocates only `HipDecode`, saving ~95 MB of prefill scratch memory.
+/// - `PrefillOnly`: allocates only `HipPrefill`, saving ~12 MB of decode scratch memory.
+///
+/// Use single-mode variants in benchmarks or disaggregated inference to maximize
+/// the batch size that fits in GPU memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HipRuntimeMode {
+    #[default]
+    Both,
+    DecodeOnly,
+    PrefillOnly,
+}
+
 /// Runtime configuration for HIP inference.
 ///
 /// Controls buffer sizing and batching behavior for the forward pass.
@@ -66,6 +82,9 @@ pub struct HipRuntimeConfig {
     /// parallel intra-chunk computation. Must be > 0. Smaller values
     /// reduce numerical error; larger values may improve throughput.
     pub fla_chunk_size: usize,
+
+    /// Which inference modules to allocate. Default: `Both`.
+    pub mode: HipRuntimeMode,
 }
 
 impl Default for HipRuntimeConfig {
@@ -74,6 +93,7 @@ impl Default for HipRuntimeConfig {
             max_prefill_chunk: 256,
             batch_size: 1,
             fla_chunk_size: fla_chunk_size_from_env(),
+            mode: HipRuntimeMode::Both,
         }
     }
 }
@@ -85,6 +105,7 @@ impl HipRuntimeConfig {
             max_prefill_chunk,
             batch_size,
             fla_chunk_size: fla_chunk_size_from_env(),
+            mode: HipRuntimeMode::Both,
         }
     }
 
@@ -94,6 +115,7 @@ impl HipRuntimeConfig {
             max_prefill_chunk: 1,
             batch_size: 1,
             fla_chunk_size: fla_chunk_size_from_env(),
+            mode: HipRuntimeMode::Both,
         }
     }
 
@@ -103,7 +125,14 @@ impl HipRuntimeConfig {
             max_prefill_chunk: max_chunk,
             batch_size: 1,
             fla_chunk_size: fla_chunk_size_from_env(),
+            mode: HipRuntimeMode::Both,
         }
+    }
+
+    /// Set the runtime mode (builder pattern).
+    pub fn with_mode(mut self, mode: HipRuntimeMode) -> Self {
+        self.mode = mode;
+        self
     }
 }
 
@@ -638,6 +667,7 @@ impl PrefillConfig {
             max_prefill_chunk: self.max_prefill_chunk,
             batch_size: self.batch_size,
             fla_chunk_size: self.fla_chunk_size,
+            mode: HipRuntimeMode::Both,
         }
     }
 }

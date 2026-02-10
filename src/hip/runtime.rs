@@ -17,7 +17,7 @@ use super::device::Stream;
 use super::ffi::HipErrorKind;
 use super::kernels::softmax_f32;
 use super::model::{HipDecode, HipPrefill, Rwkv7Model};
-use super::scratch::{DecodeConfig, HipRuntimeConfig, PrefillConfig};
+use super::scratch::{DecodeConfig, HipRuntimeConfig, HipRuntimeMode, PrefillConfig};
 use super::{HipState, Rwkv7Hip, Rwkv7ModelInfo};
 
 use web_rwkv::runtime::{
@@ -71,10 +71,10 @@ pub fn softmax_hip_batch(inputs: Vec<TensorCpu<f32>>) -> Result<Vec<TensorCpu<f3
 
 /// Mutable state for HipRuntime, protected by a Mutex for thread-safe `&self` access.
 struct HipRuntimeInner {
-    /// FLA chunked prefill module (T>1).
-    prefill: HipPrefill,
-    /// RecurrentWkv decode module (T=1).
-    decode: HipDecode,
+    /// FLA chunked prefill module (T>1). `None` in `DecodeOnly` mode.
+    prefill: Option<HipPrefill>,
+    /// RecurrentWkv decode module (T=1). `None` in `PrefillOnly` mode.
+    decode: Option<HipDecode>,
     /// Whether the next decode call needs a state transfer from prefill.
     needs_state_transfer: bool,
 }
@@ -131,29 +131,42 @@ impl HipRuntime {
     ) -> Result<Self, super::HipErrorKind> {
         let num_batch = config.batch_size;
         let chunk_size = config.max_prefill_chunk;
+        let mode = config.mode;
         let shared_model = model.model();
 
         // Extract probes from Rwkv7Hip if present
         #[cfg(feature = "hip-probes")]
         let probes_ref = model.probes.clone();
 
-        // Create prefill module with the full config
-        let prefill_config = PrefillConfig {
-            max_prefill_chunk: config.max_prefill_chunk,
-            batch_size: config.batch_size,
-            fla_chunk_size: config.fla_chunk_size,
+        // Conditionally create prefill module
+        let mut prefill = if mode != HipRuntimeMode::DecodeOnly {
+            let prefill_config = PrefillConfig {
+                max_prefill_chunk: config.max_prefill_chunk,
+                batch_size: config.batch_size,
+                fla_chunk_size: config.fla_chunk_size,
+            };
+            Some(HipPrefill::new(shared_model.clone(), prefill_config)?)
+        } else {
+            None
         };
-        let mut prefill = HipPrefill::new(shared_model.clone(), prefill_config)?;
 
-        // Create decode module with matching batch size
-        let decode_config = DecodeConfig::new(config.batch_size);
-        let mut decode = HipDecode::new(shared_model.clone(), decode_config)?;
+        // Conditionally create decode module
+        let mut decode = if mode != HipRuntimeMode::PrefillOnly {
+            let decode_config = DecodeConfig::new(config.batch_size);
+            Some(HipDecode::new(shared_model.clone(), decode_config)?)
+        } else {
+            None
+        };
 
-        // Wire probes into both modules
+        // Wire probes into whichever modules exist
         #[cfg(feature = "hip-probes")]
         {
-            prefill.set_probes(probes_ref.clone());
-            decode.set_probes(probes_ref);
+            if let Some(ref mut p) = prefill {
+                p.set_probes(probes_ref.clone());
+            }
+            if let Some(ref mut d) = decode {
+                d.set_probes(probes_ref);
+            }
         }
         // Suppress unused mut warning when probes feature is disabled
         #[cfg(not(feature = "hip-probes"))]
@@ -194,16 +207,25 @@ impl HipRuntime {
     ) -> Result<Self, super::HipErrorKind> {
         let num_batch = config.batch_size;
         let chunk_size = config.max_prefill_chunk;
+        let mode = config.mode;
 
-        let prefill_config = PrefillConfig {
-            max_prefill_chunk: config.max_prefill_chunk,
-            batch_size: config.batch_size,
-            fla_chunk_size: config.fla_chunk_size,
+        let prefill = if mode != HipRuntimeMode::DecodeOnly {
+            let prefill_config = PrefillConfig {
+                max_prefill_chunk: config.max_prefill_chunk,
+                batch_size: config.batch_size,
+                fla_chunk_size: config.fla_chunk_size,
+            };
+            Some(HipPrefill::new(shared_model.clone(), prefill_config)?)
+        } else {
+            None
         };
-        let prefill = HipPrefill::new(shared_model.clone(), prefill_config)?;
 
-        let decode_config = DecodeConfig::new(config.batch_size);
-        let decode = HipDecode::new(shared_model.clone(), decode_config)?;
+        let decode = if mode != HipRuntimeMode::PrefillOnly {
+            let decode_config = DecodeConfig::new(config.batch_size);
+            Some(HipDecode::new(shared_model.clone(), decode_config)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             model: shared_model,
@@ -251,14 +273,14 @@ impl HipRuntime {
     /// state transfer.
     pub fn reset_state(&self) {
         let mut inner = self.inner.lock().unwrap();
-        inner
-            .prefill
-            .reset_state()
-            .expect("Failed to reset prefill state");
-        inner
-            .decode
-            .reset_state()
-            .expect("Failed to reset decode state");
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill
+                .reset_state()
+                .expect("Failed to reset prefill state");
+        }
+        if let Some(ref mut decode) = inner.decode {
+            decode.reset_state().expect("Failed to reset decode state");
+        }
         inner.needs_state_transfer = false;
     }
 
@@ -269,10 +291,13 @@ impl HipRuntime {
     /// decode state would need to be read separately.
     pub fn get_state_snapshot(&self) -> HipState {
         let mut inner = self.inner.lock().unwrap();
-        inner
-            .prefill
-            .get_state()
-            .expect("Failed to read prefill state")
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill.get_state().expect("Failed to read prefill state")
+        } else if let Some(ref mut decode) = inner.decode {
+            decode.get_state().expect("Failed to read decode state")
+        } else {
+            panic!("No inference module available for get_state_snapshot")
+        }
     }
 
     /// Load external state into the runtime.
@@ -284,8 +309,19 @@ impl HipRuntime {
     /// restore a previously saved state.
     pub fn load_state(&self, state: &HipState) -> Result<(), super::HipErrorKind> {
         let mut inner = self.inner.lock().unwrap();
-        inner.prefill.load_state(state)?;
-        inner.needs_state_transfer = true;
+        let has_prefill = inner.prefill.is_some();
+        let has_decode = inner.decode.is_some();
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill.load_state(state)?;
+        }
+        if !has_prefill {
+            // Decode-only: load directly into decode
+            if let Some(ref mut decode) = inner.decode {
+                decode.load_state(state)?;
+            }
+        }
+        // Only need transfer if both modules exist
+        inner.needs_state_transfer = has_prefill && has_decode;
         Ok(())
     }
 
@@ -300,7 +336,16 @@ impl HipRuntime {
     /// save the current state for later restoration.
     pub fn get_state(&self) -> Result<HipState, super::HipErrorKind> {
         let mut inner = self.inner.lock().unwrap();
-        inner.prefill.get_state()
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill.get_state()
+        } else if let Some(ref mut decode) = inner.decode {
+            decode.get_state()
+        } else {
+            Err(super::HipErrorKind {
+                code: -1,
+                message: "No inference module available for get_state".to_string(),
+            })
+        }
     }
 
     /// Get the recurrent state for a single batch slot.
@@ -314,7 +359,16 @@ impl HipRuntime {
     /// * `batch_idx` - Index of the batch slot to extract (0-based)
     pub fn get_state_batch(&self, batch_idx: usize) -> Result<HipState, super::HipErrorKind> {
         let mut inner = self.inner.lock().unwrap();
-        inner.prefill.get_state_batch(batch_idx)
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill.get_state_batch(batch_idx)
+        } else {
+            Err(super::HipErrorKind {
+                code: -1,
+                message:
+                    "get_state_batch requires prefill module (not available in DecodeOnly mode)"
+                        .to_string(),
+            })
+        }
     }
 
     /// Load a single-batch state into a specific batch slot.
@@ -334,9 +388,18 @@ impl HipRuntime {
         state: &HipState,
     ) -> Result<(), super::HipErrorKind> {
         let mut inner = self.inner.lock().unwrap();
-        inner.prefill.load_state_batch(batch_idx, state)?;
-        inner.needs_state_transfer = true;
-        Ok(())
+        if let Some(ref mut prefill) = inner.prefill {
+            prefill.load_state_batch(batch_idx, state)?;
+            inner.needs_state_transfer = inner.decode.is_some();
+            Ok(())
+        } else {
+            Err(super::HipErrorKind {
+                code: -1,
+                message:
+                    "load_state_batch requires prefill module (not available in DecodeOnly mode)"
+                        .to_string(),
+            })
+        }
     }
 
     /// Transfer state from prefill to decode module.
@@ -347,8 +410,12 @@ impl HipRuntime {
     ///
     /// Caller must hold the inner lock.
     fn transfer_state_to_decode(inner: &mut HipRuntimeInner) -> Result<(), super::HipErrorKind> {
-        let state = inner.prefill.get_state()?;
-        inner.decode.load_state(&state)?;
+        if let (Some(ref mut prefill), Some(ref mut decode)) =
+            (&mut inner.prefill, &mut inner.decode)
+        {
+            let state = prefill.get_state()?;
+            decode.load_state(&state)?;
+        }
         inner.needs_state_transfer = false;
         Ok(())
     }
@@ -384,15 +451,29 @@ impl HipRuntime {
 
         let logits = if all_t1 {
             // T=1 decode path
+            if inner.decode.is_none() {
+                return Err(super::HipErrorKind {
+                    code: -1,
+                    message: "T=1 decode requested but runtime is in PrefillOnly mode".to_string(),
+                });
+            }
             if inner.needs_state_transfer {
                 Self::transfer_state_to_decode(&mut inner)?;
             }
-            inner.decode.decode(sequences)?
+            inner.decode.as_mut().unwrap().decode(sequences)?
         } else {
             // T>1 prefill path
-            let result = inner.prefill.prefill(sequences)?;
+            if inner.prefill.is_none() {
+                return Err(super::HipErrorKind {
+                    code: -1,
+                    message: "T>1 prefill requested but runtime is in DecodeOnly mode".to_string(),
+                });
+            }
+            let result = inner.prefill.as_mut().unwrap().prefill(sequences)?;
             // Mark that decode needs state transfer on next T=1 call
-            inner.needs_state_transfer = true;
+            if inner.decode.is_some() {
+                inner.needs_state_transfer = true;
+            }
             result
         };
 
@@ -437,32 +518,48 @@ impl HipRuntime {
         let max_len = x.iter().map(|s| s.len()).max().unwrap_or(0);
         let all_t1 = max_len == 1 && x.iter().all(|s| s.len() == 1);
 
+        let has_decode = inner.decode.is_some();
+
         if all_t1 {
             // T=1: load state into decode, run RecurrentWkv, download state
+            let decode = inner.decode.as_mut().ok_or_else(|| super::HipErrorKind {
+                code: -1,
+                message: "T=1 decode requested but runtime is in PrefillOnly mode".to_string(),
+            })?;
             match state {
                 Some(ref s) => {
-                    inner.decode.load_state(s)?;
+                    decode.load_state(s)?;
                 }
                 None => {
-                    inner.decode.reset_state()?;
+                    decode.reset_state()?;
                 }
             }
-            let logits = inner.decode.decode(x)?;
-            let new_state = inner.decode.get_state()?;
+            let logits = decode.decode(x)?;
+            let new_state = decode.get_state()?;
             Ok((logits, new_state))
         } else {
             // T>1: load state into prefill, run FLA, download state
-            match state {
-                Some(ref s) => {
-                    inner.prefill.load_state(s)?;
-                }
-                None => {
-                    inner.prefill.reset_state()?;
-                }
+            if inner.prefill.is_none() {
+                return Err(super::HipErrorKind {
+                    code: -1,
+                    message: "T>1 prefill requested but runtime is in DecodeOnly mode".to_string(),
+                });
             }
-            let logits = inner.prefill.prefill(x)?;
-            inner.needs_state_transfer = true;
-            let new_state = inner.prefill.get_state()?;
+            let (logits, new_state) = {
+                let prefill = inner.prefill.as_mut().unwrap();
+                match state {
+                    Some(ref s) => {
+                        prefill.load_state(s)?;
+                    }
+                    None => {
+                        prefill.reset_state()?;
+                    }
+                }
+                let logits = prefill.prefill(x)?;
+                let new_state = prefill.get_state()?;
+                (logits, new_state)
+            };
+            inner.needs_state_transfer = has_decode;
             Ok((logits, new_state))
         }
     }

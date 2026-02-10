@@ -53,8 +53,8 @@ pub use tensor::{TensorHip, TensorShape, TensorView};
 
 // Re-export scratch buffer types
 pub use scratch::{
-    DecodeConfig, DecodeScratch, HipRuntimeConfig, HipScratch, LoraDims, PrefillConfig,
-    PrefillScratch,
+    DecodeConfig, DecodeScratch, HipRuntimeConfig, HipRuntimeMode, HipScratch, LoraDims,
+    PrefillConfig, PrefillScratch,
 };
 
 // Re-export kernel functions

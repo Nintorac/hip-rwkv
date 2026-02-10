@@ -754,6 +754,7 @@ fn create_hip_runtime(
     hip_weights: &HipWeights,
     batch_size: usize,
     token_chunk_size: usize,
+    mode: hip_rwkv::hip::HipRuntimeMode,
 ) -> anyhow::Result<LoadedModel> {
     use hip_rwkv::hip::{HipRuntime, HipRuntimeConfig};
 
@@ -762,7 +763,7 @@ fn create_hip_runtime(
     } else {
         token_chunk_size
     };
-    let config = HipRuntimeConfig::new(chunk, batch_size);
+    let config = HipRuntimeConfig::new(chunk, batch_size).with_mode(mode);
     let runtime = HipRuntime::from_model_arc(hip_weights.weights.clone(), config)
         .map_err(|e| anyhow::anyhow!("HIP runtime init failed: {e:?}"))?;
 
@@ -783,7 +784,12 @@ async fn load_model(
 ) -> anyhow::Result<LoadedModel> {
     if backend_id == "hip" {
         let hw = load_hip_weights(model_path)?;
-        return create_hip_runtime(&hw, batch_size, token_chunk_size);
+        return create_hip_runtime(
+            &hw,
+            batch_size,
+            token_chunk_size,
+            hip_rwkv::hip::HipRuntimeMode::Both,
+        );
     }
 
     let file = TokioFile::open(model_path).await?;
@@ -1306,9 +1312,15 @@ async fn bench_smoke_async() {
         profile.benchmarks.keys().collect::<Vec<_>>()
     );
     for (scenario, params) in &profile.benchmarks {
-        println!("[bench]   {}: batch_sizes={:?}", scenario, params.batch_sizes);
+        println!(
+            "[bench]   {}: batch_sizes={:?}",
+            scenario, params.batch_sizes
+        );
         if !params.token_chunk_sizes.is_empty() {
-            println!("[bench]     token_chunk_sizes={:?}", params.token_chunk_sizes);
+            println!(
+                "[bench]     token_chunk_sizes={:?}",
+                params.token_chunk_sizes
+            );
         }
         if !params.decode_steps.is_empty() {
             println!("[bench]     decode_steps={:?}", params.decode_steps);
@@ -1666,7 +1678,12 @@ async fn bench_smoke_async() {
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
                 );
-                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                match create_hip_runtime(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::DecodeOnly,
+                ) {
                     Ok(m) => {
                         loaded_model = Some(m);
                     }
@@ -1924,7 +1941,12 @@ async fn bench_smoke_async() {
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
                 );
-                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                match create_hip_runtime(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::PrefillOnly,
+                ) {
                     Ok(m) => {
                         loaded_model = Some(m);
                     }
@@ -2189,7 +2211,12 @@ async fn bench_smoke_async() {
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
                 );
-                match create_hip_runtime(hw, batch_size as usize, token_chunk_size as usize) {
+                match create_hip_runtime(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::PrefillOnly,
+                ) {
                     Ok(m) => {
                         loaded_model = Some(m);
                     }
