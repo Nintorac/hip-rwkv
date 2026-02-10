@@ -96,9 +96,6 @@ pub struct BenchConfig {
     #[serde(default)]
     pub mixed_cases: HashMap<String, MixedCase>,
 
-    /// Sweep definitions
-    pub sweeps: HashMap<String, SweepConfig>,
-
     /// Output configuration
     pub output: OutputConfig,
 
@@ -115,6 +112,26 @@ pub struct BenchConfig {
     pub shared_controls: SharedControls,
 }
 
+/// Per-scenario benchmark parameters
+#[derive(Debug, Deserialize, Clone)]
+pub struct BenchmarkParams {
+    /// Batch sizes to sweep
+    pub batch_sizes: Vec<u32>,
+
+    /// Token chunk sizes. Only meaningful for prefill scenarios (HIP FLA buffer sizing).
+    /// For decode_only, this is ignored — the runner uses chunk_size=1.
+    #[serde(default)]
+    pub token_chunk_sizes: Vec<u32>,
+
+    /// Decode steps (decode_only only)
+    #[serde(default)]
+    pub decode_steps: Vec<u32>,
+
+    /// Sequence lengths (prefill_uniform, prefill_mixed only)
+    #[serde(default)]
+    pub seq_lens: Vec<u32>,
+}
+
 /// A named profile that specifies which models, backends, and scenarios to run
 #[derive(Debug, Deserialize)]
 pub struct Profile {
@@ -128,22 +145,8 @@ pub struct Profile {
     /// List of backend IDs to include
     pub backends: Vec<String>,
 
-    /// List of scenario names to run
-    pub scenarios: Vec<String>,
-
-    /// Batch sizes to sweep
-    pub batch_sizes: Vec<u32>,
-
-    /// Token chunk sizes to sweep
-    pub token_chunk_sizes: Vec<u32>,
-
-    /// Decode steps (for decode_only scenario)
-    #[serde(default)]
-    pub decode_steps: Vec<u32>,
-
-    /// Sequence lengths (for prefill scenarios)
-    #[serde(default)]
-    pub seq_lens: Vec<u32>,
+    /// Per-scenario benchmark parameter blocks
+    pub benchmarks: HashMap<String, BenchmarkParams>,
 
     /// Number of warmup runs
     #[serde(default = "default_warmup_runs")]
@@ -285,30 +288,6 @@ pub struct MixedCase {
     /// Scale rule
     #[serde(default)]
     pub scale_rule: Option<String>,
-}
-
-/// Sweep configuration defining the parameter matrix
-#[derive(Debug, Deserialize)]
-pub struct SweepConfig {
-    /// Models to include
-    pub models: Vec<String>,
-
-    /// Backends to include
-    pub backends: Vec<String>,
-
-    /// Batch sizes to sweep
-    pub batch_sizes: Vec<u32>,
-
-    /// Token chunk sizes to sweep
-    pub token_chunk_sizes: Vec<u32>,
-
-    /// Sequence lengths to sweep
-    #[serde(default)]
-    pub seq_lens: Vec<u32>,
-
-    /// Decode steps to sweep
-    #[serde(default)]
-    pub decode_steps: Vec<u32>,
 }
 
 /// Output configuration
@@ -667,33 +646,29 @@ pub fn expand_profile(
 
     let mut cases = Vec::new();
 
-    for model in &models {
-        for backend in &backends {
-            for &batch_size in &profile.batch_sizes {
-                for &token_chunk_size in &profile.token_chunk_sizes {
-                    for scenario in &profile.scenarios {
-                        match scenario.as_str() {
-                            "decode_only" => {
-                                for &decode_steps in &profile.decode_steps {
-                                    cases.push(BenchCase {
-                                        model: model.clone(),
-                                        backend: backend.clone(),
-                                        scenario: scenario.clone(),
-                                        batch_size,
-                                        token_chunk_size,
-                                        seq_len: None,
-                                        decode_steps: Some(decode_steps),
-                                        warmup_runs: profile.warmup_runs,
-                                        repeats: profile.repeats,
-                                    });
-                                }
+    for (scenario, params) in &profile.benchmarks {
+        for model in &models {
+            for backend in &backends {
+                for &batch_size in &params.batch_sizes {
+                    match scenario.as_str() {
+                        "decode_only" => {
+                            for &decode_steps in &params.decode_steps {
+                                cases.push(BenchCase {
+                                    model: model.clone(),
+                                    backend: backend.clone(),
+                                    scenario: scenario.clone(),
+                                    batch_size,
+                                    token_chunk_size: 1,
+                                    seq_len: None,
+                                    decode_steps: Some(decode_steps),
+                                    warmup_runs: profile.warmup_runs,
+                                    repeats: profile.repeats,
+                                });
                             }
-                            "prefill_uniform" | "prefill_mixed" => {
-                                for &seq_len in &profile.seq_lens {
-                                    // HACK: skip cases where seq_len != chunk_size
-                                    if seq_len != token_chunk_size {
-                                        continue;
-                                    }
+                        }
+                        "prefill_uniform" | "prefill_mixed" => {
+                            for &token_chunk_size in &params.token_chunk_sizes {
+                                for &seq_len in &params.seq_lens {
                                     cases.push(BenchCase {
                                         model: model.clone(),
                                         backend: backend.clone(),
@@ -707,9 +682,9 @@ pub fn expand_profile(
                                     });
                                 }
                             }
-                            _ => {
-                                println!("[bench] Unknown scenario: {}", scenario);
-                            }
+                        }
+                        _ => {
+                            println!("[bench] Unknown scenario: {}", scenario);
                         }
                     }
                 }
@@ -1326,9 +1301,22 @@ async fn bench_smoke_async() {
     println!("[bench] Profile description: {}", profile.description);
     println!("[bench] Models: {:?}", profile.models);
     println!("[bench] Backends: {:?}", profile.backends);
-    println!("[bench] Scenarios: {:?}", profile.scenarios);
-    println!("[bench] Batch sizes: {:?}", profile.batch_sizes);
-    println!("[bench] Token chunk sizes: {:?}", profile.token_chunk_sizes);
+    println!(
+        "[bench] Benchmarks: {:?}",
+        profile.benchmarks.keys().collect::<Vec<_>>()
+    );
+    for (scenario, params) in &profile.benchmarks {
+        println!("[bench]   {}: batch_sizes={:?}", scenario, params.batch_sizes);
+        if !params.token_chunk_sizes.is_empty() {
+            println!("[bench]     token_chunk_sizes={:?}", params.token_chunk_sizes);
+        }
+        if !params.decode_steps.is_empty() {
+            println!("[bench]     decode_steps={:?}", params.decode_steps);
+        }
+        if !params.seq_lens.is_empty() {
+            println!("[bench]     seq_lens={:?}", params.seq_lens);
+        }
+    }
 
     // Expand to benchmark cases
     let cases = match expand_profile(&config, profile) {

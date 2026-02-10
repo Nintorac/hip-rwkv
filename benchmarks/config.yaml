@@ -5,7 +5,7 @@
 # how to execute them, and how to write JSONL output.
 
 # Schema version - bump on breaking changes
-schema_version: 2
+schema_version: 3
 
 # =============================================================================
 # PROFILES
@@ -20,15 +20,16 @@ profiles:
       - rwkv7_othello_9m
     backends:
       - wgpu
-    scenarios:
-      - decode_only
-      - prefill_uniform
-    batch_sizes: [1, 4]
-    token_chunk_sizes: [128]
-    decode_steps: [128]
-    seq_lens: [32, 128, 256]
     warmup_runs: 1
     repeats: 2
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 4]
+        decode_steps: [128]
+      prefill_uniform:
+        batch_sizes: [1, 4]
+        token_chunk_sizes: [128]
+        seq_lens: [32, 128, 256]
 
   dev:
     description: "Development profile (~5-10 min). Broader coverage for local testing."
@@ -38,16 +39,20 @@ profiles:
     backends:
       - hip
       - wgpu
-    scenarios:
-      - decode_only
-      - prefill_uniform
-      - prefill_mixed
-    batch_sizes: [16, 32]
-    token_chunk_sizes: [32]
-    decode_steps: [32, 64]
-    seq_lens: [32, 64]
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [16, 32]
+        decode_steps: [32, 64]
+      prefill_uniform:
+        batch_sizes: [16, 32]
+        token_chunk_sizes: [32]
+        seq_lens: [32, 64]
+      prefill_mixed:
+        batch_sizes: [16, 32]
+        token_chunk_sizes: [32]
+        seq_lens: [32, 64]
 
   quick_coverage:
     description: "Quick coverage profile (~3-6 min). Good dashboard axes with limited runtime."
@@ -56,17 +61,20 @@ profiles:
     backends:
       - hip
       - wgpu
-    scenarios:
-      - decode_only
-      - prefill_uniform
-      - prefill_mixed
-    batch_sizes: [8, 16]
-    token_chunk_sizes: [32, 64]
-    decode_steps: [64]
-    # NOTE: runner currently filters prefill cases to seq_len == token_chunk_size.
-    seq_lens: [32, 64]
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [8, 16]
+        decode_steps: [64]
+      prefill_uniform:
+        batch_sizes: [8, 16]
+        token_chunk_sizes: [32, 64]
+        seq_lens: [32, 64]
+      prefill_mixed:
+        batch_sizes: [8, 16]
+        token_chunk_sizes: [32, 64]
+        seq_lens: [32, 64]
 
   decode_batch_sweep:
     description: "Decode-only batch sweep (fast). Single-step decode across large batch sizes."
@@ -76,15 +84,13 @@ profiles:
     backends:
       - wgpu
       - hip
-    scenarios:
-      - decode_only
-    # batch_sizes: [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    batch_sizes: [32, 64, 128, 256]
-    token_chunk_sizes: [1]
-    decode_steps: [8]
-    seq_lens: []
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        # batch_sizes: [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+        batch_sizes: [32, 64, 128, 256]
+        decode_steps: [8]
 
   ablation_all_sizes:
     description: "Ablation across all model sizes (0.1b, 2.9b, 13.3b)."
@@ -95,14 +101,12 @@ profiles:
     backends:
       - wgpu
       - hip
-    scenarios:
-      - decode_only
-    batch_sizes: [1, 8, 32, 64, 128]
-    token_chunk_sizes: [1]
-    decode_steps: [16]
-    seq_lens: []
     warmup_runs: 1
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 8, 32, 64, 128]
+        decode_steps: [16]
 
   ablation_quick:
     description: "Quick ablation for HIP optimizations (0.1b and 2.9b, HIP only)."
@@ -111,14 +115,12 @@ profiles:
       - rwkv7_g1c_2.9b
     backends:
       - hip
-    scenarios:
-      - decode_only
-    batch_sizes: [64, 256]
-    token_chunk_sizes: [1]
-    decode_steps: [8]
-    seq_lens: []
     warmup_runs: 1
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [64, 256]
+        decode_steps: [8]
 
   decode_batch_sweep_hip:
     description: "Decode-only batch sweep (fast, hip only)."
@@ -127,15 +129,13 @@ profiles:
       - rwkv7_g1c_2.9b
     backends:
       - hip
-    scenarios:
-      - decode_only
-    # batch_sizes: [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    batch_sizes: [32, 64, 128, 256, 512, 1024]
-    token_chunk_sizes: [1]
-    decode_steps: [64]
-    seq_lens: []
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        # batch_sizes: [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+        batch_sizes: [32, 64, 128, 256, 512, 1024]
+        decode_steps: [64]
 
   decode_batch_sweep_hip_large:
     description: "Decode-only batch sweep (hip only, large batches)."
@@ -144,14 +144,12 @@ profiles:
       # - rwkv7_g1c_2.9b
     backends:
       - hip
-    scenarios:
-      - decode_only
-    batch_sizes: [512, 1024, 2048, 4096, 8192, 16384, 32768]
-    token_chunk_sizes: [1]
-    decode_steps: [64]
-    seq_lens: []
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [512, 1024, 2048, 4096, 8192, 16384, 32768]
+        decode_steps: [64]
 
   prefill_chunk_sweep:
     description: "Prefill sweep across chunk sizes 16/64/256/1024 with uniform and mixed scenarios."
@@ -160,31 +158,31 @@ profiles:
       - rwkv7_g1c_2.9b
     backends:
       - hip
-    scenarios:
-      - prefill_uniform
-      - prefill_mixed
-    batch_sizes: [1, 4, 16]
-    token_chunk_sizes: [16, 64, 256, 1024]
-    decode_steps: []
-    seq_lens: [1, 8, 32, 64, 128, 256, 512, 1024, 2048]
     warmup_runs: 1
     repeats: 1
+    benchmarks:
+      prefill_uniform:
+        batch_sizes: [1, 4, 16]
+        token_chunk_sizes: [16, 64, 256, 1024]
+        seq_lens: [1, 8, 32, 64, 128, 256, 512, 1024, 2048]
+      prefill_mixed:
+        batch_sizes: [1, 4, 16]
+        token_chunk_sizes: [16, 64, 256, 1024]
+        seq_lens: [1, 8, 32, 64, 128, 256, 512, 1024, 2048]
 
-  # Quick variant for testing
   prefill_chunk_sweep_quick:
     description: "Quick prefill chunk sweep (0.1b only, bs=1)."
     models:
       - rwkv7_g1a_0.1b
     backends:
       - hip
-    scenarios:
-      - prefill_uniform
-    batch_sizes: [1]
-    token_chunk_sizes: [16, 64, 256, 1024]
-    decode_steps: []
-    seq_lens: [1, 32, 256, 1024]
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      prefill_uniform:
+        batch_sizes: [1]
+        token_chunk_sizes: [16, 64, 256, 1024]
+        seq_lens: [1, 32, 256, 1024]
 
   prefill_single_chunk:
     description: "Single-chunk prefill throughput at various chunk sizes (seq_len == chunk_size)."
@@ -195,14 +193,13 @@ profiles:
       - rwkv7_g0b_13.3b
     backends:
       - hip
-    scenarios:
-      - prefill_uniform
-    batch_sizes: [8, 16]
-    token_chunk_sizes: [64, 128, 256, 512, 1024, 2048, 4096]
-    decode_steps: []
-    seq_lens: [64, 128, 256, 512, 1024, 2048, 4096]
     warmup_runs: 1
     repeats: 1
+    benchmarks:
+      prefill_uniform:
+        batch_sizes: [8, 16]
+        token_chunk_sizes: [64, 128, 256, 512, 1024, 2048, 4096]
+        seq_lens: [64, 128, 256, 512, 1024, 2048, 4096]
 
   decode_dev:
     description: "Decode-only dev loop (very fast). 0.1b only, small batch sweep."
@@ -210,14 +207,12 @@ profiles:
       - rwkv7_g1a_0.1b
     backends:
       - hip
-    scenarios:
-      - decode_only
-    batch_sizes: [32, 64, 128, 256]
-    token_chunk_sizes: [1]
-    decode_steps: [4]
-    seq_lens: []
     warmup_runs: 0
     repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [32, 64, 128, 256]
+        decode_steps: [4]
 
   full:
     description: "Full benchmark suite (~30+ min). Comprehensive coverage for CI/nightly."
@@ -227,16 +222,20 @@ profiles:
     backends:
       - wgpu
       - hip
-    scenarios:
-      - decode_only
-      - prefill_uniform
-      - prefill_mixed
-    batch_sizes: [1, 2, 4, 8, 16, 32]
-    token_chunk_sizes: [32, 128, 256, 512]
-    decode_steps: [128, 512, 2048]
-    seq_lens: [1, 8, 32, 64, 127, 128, 129, 256, 512, 1024, 2048]
     warmup_runs: 2
     repeats: 5
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 2, 4, 8, 16, 32]
+        decode_steps: [128, 512, 2048]
+      prefill_uniform:
+        batch_sizes: [1, 2, 4, 8, 16, 32]
+        token_chunk_sizes: [32, 128, 256, 512]
+        seq_lens: [1, 8, 32, 64, 127, 128, 129, 256, 512, 1024, 2048]
+      prefill_mixed:
+        batch_sizes: [1, 2, 4, 8, 16, 32]
+        token_chunk_sizes: [32, 128, 256, 512]
+        seq_lens: [1, 8, 32, 64, 127, 128, 129, 256, 512, 1024, 2048]
 
 # =============================================================================
 # MODELS
@@ -402,48 +401,6 @@ mixed_cases:
     base_chunk_size: 256
     # Scale: len_i = max(1, base_i * C / 256)
     scale_rule: "linear"
-
-# =============================================================================
-# SWEEPS
-# =============================================================================
-# Cartesian product definitions for benchmark matrix expansion.
-
-sweeps:
-  # Default sweep used when profile doesn't override
-  default:
-    models: ["rwkv7_othello_9m"]
-    backends: ["wgpu"]
-    batch_sizes: [1, 2, 4, 8]
-    token_chunk_sizes: [128, 256]
-    seq_lens: [32, 128, 256, 512]
-    decode_steps: [128, 512]
-
-  # Smoke test sweep (minimal)
-  smoke:
-    models: ["rwkv7_othello_9m"]
-    backends: ["wgpu"]
-    batch_sizes: [1, 4]
-    token_chunk_sizes: [128]
-    seq_lens: [32, 128]
-    decode_steps: [128]
-
-  # Development sweep
-  dev:
-    models: ["rwkv7_g1a_0.1b", "rwkv7_g1c_2.9b"]
-    backends: ["wgpu"]
-    batch_sizes: [1, 2, 4, 8, 16]
-    token_chunk_sizes: [128, 256]
-    seq_lens: [1, 32, 64, 128, 256, 512]
-    decode_steps: [128, 512]
-
-  # Full sweep for CI
-  full:
-    models: ["rwkv7_g1a_0.1b", "rwkv7_g1c_2.9b"]
-    backends: ["wgpu", "hip"]
-    batch_sizes: [1, 2, 4, 8, 16, 32]
-    token_chunk_sizes: [32, 128, 256, 512]
-    seq_lens: [1, 8, 32, 64, 127, 128, 129, 256, 512, 1024, 2048]
-    decode_steps: [128, 512, 2048]
 
 # =============================================================================
 # OUTPUT

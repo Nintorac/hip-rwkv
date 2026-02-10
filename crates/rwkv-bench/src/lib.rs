@@ -7,43 +7,10 @@
 //! - Skip condition evaluation to filter benchmark cases
 //! - Limits tracking for controlling benchmark execution
 //! - Environment/build metadata collection for benchmark run headers
-//! - Sweep execution engine for cartesian expansion and case lifecycle management
 //! - JSONL writer for benchmark output with append-only semantics
 //! - Prefill-uniform scenario with length sets and TTFT tracking
 //! - Prefill-mixed named case patterns for mixed-batch benchmarks
 //! - Error classification for continue-on-error policy
-//!
-//! # Sweep Execution
-//!
-//! The sweep engine performs cartesian product expansion across benchmark dimensions:
-//! - models
-//! - backends (including wgpu variants)
-//! - batch_sizes
-//! - token_chunk_sizes
-//! - scenarios (with scenario-specific parameters like seq_lens, decode_steps)
-//!
-//! Skip conditions are applied during expansion, and limits are tracked to control execution.
-//!
-//! ```rust,ignore
-//! use rwkv_bench::sweep::{SweepEngine, SweepConfig, Hooks};
-//! use rwkv_bench::config::{SkipConditions, Limits};
-//!
-//! let config = SweepConfig { /* ... */ };
-//! let mut engine = SweepEngine::new(config, SkipConditions::default(), Limits::default());
-//!
-//! let hooks = Hooks::new()
-//!     .on_case_setup(|params| { /* setup */ Ok(()) })
-//!     .on_case_teardown(|params| { /* teardown */ });
-//!
-//! let mut executor = engine.execute_with_hooks(&hooks);
-//! while let Some(case) = executor.next_case() {
-//!     case.setup(&hooks)?;
-//!     // run benchmark
-//!     executor.record_executed();
-//!     case.teardown(&hooks);
-//! }
-//! let summary = executor.finish();
-//! ```
 //!
 //! # Prefill-Uniform Scenario
 //!
@@ -98,8 +65,6 @@ pub mod prefill_mixed;
 pub mod prefill_uniform;
 pub mod scenarios;
 pub mod skip;
-pub mod sweep;
-
 pub use config::{CustomRule, Limits, SkipConditions};
 pub use error::{classify_error, classify_error_message, BenchError, BenchResult, ErrorContext};
 pub use jsonl::{
@@ -124,4 +89,3 @@ pub use scenarios::{
     DecodeScenario, TokenRng,
 };
 pub use skip::{LimitsTracker, SkipReason};
-pub use sweep::{CaseParams, ExpandedCase, Hooks, SweepConfig, SweepEngine, SweepSummary};
