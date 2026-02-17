@@ -153,7 +153,9 @@ impl Rwkv7Model {
     /// # Returns
     /// The loaded model weights wrapped in Arc, or an error.
     pub fn load<P: AsRef<Path>>(path: P) -> std::result::Result<Arc<Self>, ModelLoadError> {
-        let data = std::fs::read(path.as_ref())?;
+        let file = std::fs::File::open(path.as_ref())?;
+        let data = unsafe { memmap2::Mmap::map(&file) }
+            .map_err(|e| ModelLoadError::SafeTensor(format!("mmap failed: {}", e)))?;
         let st = safetensors::SafeTensors::deserialize(&data).map_err(|e| {
             ModelLoadError::SafeTensor(format!("Failed to parse SafeTensors: {}", e))
         })?;

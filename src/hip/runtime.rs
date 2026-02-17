@@ -2045,17 +2045,19 @@ mod tests {
         }
         print_gpu_memory();
 
+        let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+        let weights = model.model();
+
         let mut last_ok = 0usize;
         let mut batch = 1usize;
         while batch <= 32768 {
-            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
             let config = HipRuntimeConfig {
                 max_prefill_chunk: 1,
                 batch_size: batch,
                 fla_chunk_size: 16,
                 mode: HipRuntimeMode::DecodeOnly,
             };
-            match HipRuntime::with_config(model, config) {
+            match HipRuntime::from_model_arc(weights.clone(), config) {
                 Ok(_) => {
                     println!("  decode batch={}: OK", batch);
                     last_ok = batch;
@@ -2082,17 +2084,19 @@ mod tests {
         }
         print_gpu_memory();
 
+        let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+        let weights = model.model();
+
         let mut last_ok = 0usize;
         let mut chunk = 16usize;
         while chunk <= 65536 {
-            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
             let config = HipRuntimeConfig {
                 max_prefill_chunk: chunk,
                 batch_size: 1,
                 fla_chunk_size: 16,
                 mode: HipRuntimeMode::PrefillOnly,
             };
-            match HipRuntime::with_config(model, config) {
+            match HipRuntime::from_model_arc(weights.clone(), config) {
                 Ok(_) => {
                     println!("  prefill chunk={}: OK", chunk);
                     last_ok = chunk;
@@ -2119,17 +2123,19 @@ mod tests {
         }
         print_gpu_memory();
 
+        let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+        let weights = model.model();
+
         let mut last_ok = 0usize;
         let mut batch = 1usize;
         while batch <= 32768 {
-            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
             let config = HipRuntimeConfig {
                 max_prefill_chunk: 16,
                 batch_size: batch,
                 fla_chunk_size: 16,
                 mode: HipRuntimeMode::PrefillOnly,
             };
-            match HipRuntime::with_config(model, config) {
+            match HipRuntime::from_model_arc(weights.clone(), config) {
                 Ok(_) => {
                     println!("  prefill batch={}: OK", batch);
                     last_ok = batch;
