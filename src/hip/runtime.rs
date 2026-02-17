@@ -2020,6 +2020,131 @@ mod tests {
         println!("test_per_batch_state_save_restore PASSED");
     }
 
+    // ========== Device limit discovery tests ==========
+
+    use test_case::test_case;
+
+    fn print_gpu_memory() {
+        if let Ok((free, total)) = super::super::ffi::query_device_memory() {
+            println!(
+                "GPU memory: {:.0} MB free / {:.0} MB total",
+                free as f64 / 1048576.0,
+                total as f64 / 1048576.0
+            );
+        }
+    }
+
+    #[test_case("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st" ; "0_1b")]
+    #[test_case("/workspace/models/rwkv7-g1c-2.9b-20251231-ctx8192.st" ; "2_9b")]
+    #[test_case("/workspace/models/rwkv7-g1d-7.2b-20260131-ctx8192.st" ; "7_2b")]
+    #[test_case("/workspace/models/rwkv7-g0b-13.3b-20251130-ctx8192.st" ; "13_3b")]
+    fn test_discover_max_decode_batch(model_path: &str) {
+        if !Path::new(model_path).exists() {
+            eprintln!("Skipping: {}", model_path);
+            return;
+        }
+        print_gpu_memory();
+
+        let mut last_ok = 0usize;
+        let mut batch = 1usize;
+        while batch <= 32768 {
+            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+            let config = HipRuntimeConfig {
+                max_prefill_chunk: 1,
+                batch_size: batch,
+                fla_chunk_size: 16,
+                mode: HipRuntimeMode::DecodeOnly,
+            };
+            match HipRuntime::with_config(model, config) {
+                Ok(_) => {
+                    println!("  decode batch={}: OK", batch);
+                    last_ok = batch;
+                }
+                Err(e) => {
+                    println!("  decode batch={}: FAILED ({})", batch, e);
+                    break;
+                }
+            }
+            batch *= 2;
+        }
+        println!("Max decode batch size: {}", last_ok);
+        assert!(last_ok >= 1, "Should succeed with at least batch=1");
+    }
+
+    #[test_case("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st" ; "0_1b")]
+    #[test_case("/workspace/models/rwkv7-g1c-2.9b-20251231-ctx8192.st" ; "2_9b")]
+    #[test_case("/workspace/models/rwkv7-g1d-7.2b-20260131-ctx8192.st" ; "7_2b")]
+    #[test_case("/workspace/models/rwkv7-g0b-13.3b-20251130-ctx8192.st" ; "13_3b")]
+    fn test_discover_max_prefill_chunk(model_path: &str) {
+        if !Path::new(model_path).exists() {
+            eprintln!("Skipping: {}", model_path);
+            return;
+        }
+        print_gpu_memory();
+
+        let mut last_ok = 0usize;
+        let mut chunk = 16usize;
+        while chunk <= 65536 {
+            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+            let config = HipRuntimeConfig {
+                max_prefill_chunk: chunk,
+                batch_size: 1,
+                fla_chunk_size: 16,
+                mode: HipRuntimeMode::PrefillOnly,
+            };
+            match HipRuntime::with_config(model, config) {
+                Ok(_) => {
+                    println!("  prefill chunk={}: OK", chunk);
+                    last_ok = chunk;
+                }
+                Err(e) => {
+                    println!("  prefill chunk={}: FAILED ({})", chunk, e);
+                    break;
+                }
+            }
+            chunk *= 2;
+        }
+        println!("Max prefill chunk size: {}", last_ok);
+        assert!(last_ok >= 16, "Should succeed with at least chunk=16");
+    }
+
+    #[test_case("/workspace/models/rwkv7-g1a-0.1b-20250728-ctx4096.st" ; "0_1b")]
+    #[test_case("/workspace/models/rwkv7-g1c-2.9b-20251231-ctx8192.st" ; "2_9b")]
+    #[test_case("/workspace/models/rwkv7-g1d-7.2b-20260131-ctx8192.st" ; "7_2b")]
+    #[test_case("/workspace/models/rwkv7-g0b-13.3b-20251130-ctx8192.st" ; "13_3b")]
+    fn test_discover_max_prefill_batch(model_path: &str) {
+        if !Path::new(model_path).exists() {
+            eprintln!("Skipping: {}", model_path);
+            return;
+        }
+        print_gpu_memory();
+
+        let mut last_ok = 0usize;
+        let mut batch = 1usize;
+        while batch <= 32768 {
+            let model = Rwkv7Hip::load(model_path).expect("Failed to load model");
+            let config = HipRuntimeConfig {
+                max_prefill_chunk: 16,
+                batch_size: batch,
+                fla_chunk_size: 16,
+                mode: HipRuntimeMode::PrefillOnly,
+            };
+            match HipRuntime::with_config(model, config) {
+                Ok(_) => {
+                    println!("  prefill batch={}: OK", batch);
+                    last_ok = batch;
+                }
+                Err(e) => {
+                    println!("  prefill batch={}: FAILED ({})", batch, e);
+                    break;
+                }
+            }
+            batch *= 2;
+        }
+        println!("Max prefill batch size: {}", last_ok);
+        assert!(last_ok >= 1, "Should succeed with at least batch=1");
+    }
+
     /// Test state round-trip through get_state_batch -> load_state_batch.
     ///
     /// Bug: bd-2sh.8.19.6 -- Verifies that the Decode/FLA layout transpose

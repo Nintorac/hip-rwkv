@@ -510,6 +510,8 @@ extern "C" {
     pub fn hip_is_device_integrated(device_id: c_int, integrated: *mut c_int) -> HipError;
     pub fn hip_supports_cooperative_launch(device_id: c_int, supported: *mut c_int) -> HipError;
 
+    pub fn hip_mem_get_info(free: *mut usize, total: *mut usize) -> HipError;
+
     // rocBLAS functions
     pub fn rocblas_handle_create(handle: *mut RocblasHandle) -> RocblasStatus;
     pub fn rocblas_handle_destroy(handle: RocblasHandle) -> RocblasStatus;
@@ -879,4 +881,12 @@ pub fn device_supports_cooperative_launch(device_id: i32) -> Result<bool> {
     let mut supported: c_int = 0;
     unsafe { check(hip_supports_cooperative_launch(device_id, &mut supported))? };
     Ok(supported != 0)
+}
+
+/// Query free and total device memory in bytes.
+pub fn query_device_memory() -> Result<(usize, usize)> {
+    let mut free: usize = 0;
+    let mut total: usize = 0;
+    unsafe { check(hip_mem_get_info(&mut free, &mut total))? };
+    Ok((free, total))
 }

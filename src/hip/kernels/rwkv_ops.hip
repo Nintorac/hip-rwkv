@@ -1652,5 +1652,9 @@ hipError_t launch_wkv7_gemv(
     return hipSuccess;
 }
 
+hipError_t hip_mem_get_info(size_t* free, size_t* total) {
+    return hipMemGetInfo(free, total);
+}
+
 } // extern "C"
 
