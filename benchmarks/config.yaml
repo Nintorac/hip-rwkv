@@ -237,6 +237,100 @@ profiles:
         token_chunk_sizes: [32, 128, 256, 512]
         seq_lens: [1, 8, 32, 64, 127, 128, 129, 256, 512, 1024, 2048]
 
+  # =========================================================================
+  # AIMax 395 Discovery & Dashboard Profiles
+  # =========================================================================
+  # Discovery profiles: minimal overhead, broad parameter sweep to find limits.
+  # Set WEB_RWKV_MAX_DEVICE_MB=32768 to prevent GTT overflow on the APU.
+
+  aimax395_discover_decode:
+    description: "Discover max HIP decode batch_size per model on AIMax 395."
+    models:
+      - rwkv7_g1a_0.1b
+      - rwkv7_g1c_2.9b
+      - rwkv7_g1d_7.2b
+      - rwkv7_g0b_13.3b
+    backends:
+      - hip
+    warmup_runs: 0
+    repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+        decode_steps: [4]
+
+  aimax395_discover_prefill:
+    description: "Discover max HIP prefill batch*chunk per model on AIMax 395."
+    models:
+      - rwkv7_g1a_0.1b
+      - rwkv7_g1c_2.9b
+      - rwkv7_g1d_7.2b
+      - rwkv7_g0b_13.3b
+    backends:
+      - hip
+    warmup_runs: 0
+    repeats: 1
+    benchmarks:
+      prefill_uniform:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        token_chunk_sizes: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+        seq_lens: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+
+  aimax395_discover_wgpu:
+    description: "Discover max wgpu decode batch_size on AIMax 395."
+    models:
+      - rwkv7_g1a_0.1b
+    backends:
+      - wgpu
+    warmup_runs: 0
+    repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        decode_steps: [4]
+
+  aimax395_dashboard:
+    description: "AIMax 395 dashboard benchmark. Power-of-2 decode/prefill sweeps, all models."
+    models:
+      - rwkv7_g1a_0.1b
+      - rwkv7_g1c_2.9b
+      - rwkv7_g1d_7.2b
+      - rwkv7_g0b_13.3b
+    backends:
+      - hip
+      - wgpu
+    warmup_runs: 1
+    repeats: 3
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+        decode_steps: [32]
+      prefill_uniform:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        token_chunk_sizes: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+        seq_lens: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+
+  aimax395_dashboard_validate:
+    description: "AIMax 395 dashboard validation (single run, no warmup)."
+    models:
+      - rwkv7_g1a_0.1b
+      - rwkv7_g1c_2.9b
+      - rwkv7_g1d_7.2b
+      - rwkv7_g0b_13.3b
+    backends:
+      - hip
+      - wgpu
+    warmup_runs: 0
+    repeats: 1
+    benchmarks:
+      decode_only:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+        decode_steps: [32]
+      prefill_uniform:
+        batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        token_chunk_sizes: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+        seq_lens: [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+
 # =============================================================================
 # MODELS
 # =============================================================================
@@ -275,7 +369,7 @@ models:
       rwkv_version: "v7"
       variant: "g1d"
       ctx: 8192
-    max_batch_size: 256
+    max_batch_size: 65536
     max_token_chunk_size: 4096
     skip: false
 
@@ -287,7 +381,7 @@ models:
       rwkv_version: "v7"
       variant: "g0b"
       ctx: 8192
-    max_batch_size: 256
+    max_batch_size: 65536
     max_token_chunk_size: 4096
     skip: false
 
@@ -448,8 +542,8 @@ skip_conditions:
   # Custom skip rules (evaluated in order)
   custom_rules:
     - name: "skip_large_batch_large_seq"
-      description: "Skip batch_size > 16 when seq_len > 1024"
-      condition: "batch_size > 16 AND seq_len > 1024"
+      description: "Skip batch_size > 16 when seq_len > 1024 (prefill only)"
+      condition: "batch_size > 16 AND seq_len IS NOT NULL AND seq_len > 1024"
 
     - name: "skip_puzzle15_hip"
       description: "Skip puzzle15 model on hip backend (custom ops not supported)"
@@ -458,6 +552,55 @@ skip_conditions:
     - name: "skip_wgpu_large_batch"
       description: "Skip large batch sizes on wgpu to avoid buffer size limits"
       condition: "backend LIKE 'wgpu%' AND batch_size > 256"
+
+    # --- AIMax 395 VRAM/memory limits ---
+    # Decode limits discovered via aimax395_discover_decode profile.
+    # Prefill/wgpu limits are placeholders until discovery runs complete.
+    # The memory budget (WEB_RWKV_MAX_DEVICE_MB) provides a runtime safety net
+    # that catches cases beyond these limits even without exact skip values.
+    #
+    # HIP decode: per-model max batch_size (discovered)
+    - name: "aimax395_hip_decode_0.1b"
+      description: "AIMax 395: 0.1b HIP decode max batch=8192"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1a_0.1b' AND scenario = 'decode_only' AND batch_size > 8192"
+
+    - name: "aimax395_hip_decode_2.9b"
+      description: "AIMax 395: 2.9b HIP decode max batch=1024"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1c_2.9b' AND scenario = 'decode_only' AND batch_size > 1024"
+
+    - name: "aimax395_hip_decode_7.2b"
+      description: "AIMax 395: 7.2b HIP decode max batch=512 (from budget estimate)"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1d_7.2b' AND scenario = 'decode_only' AND batch_size > 512"
+
+    - name: "aimax395_hip_decode_13.3b"
+      description: "AIMax 395: 13.3b HIP decode max batch=512"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g0b_13.3b' AND scenario = 'decode_only' AND batch_size > 512"
+
+    # HIP prefill: per-model max batch * chunk product
+    - name: "aimax395_hip_prefill_0.1b"
+      description: "AIMax 395: 0.1b HIP prefill max batch*chunk"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1a_0.1b' AND scenario = 'prefill_uniform' AND batch_size * token_chunk_size > 999999999"
+
+    - name: "aimax395_hip_prefill_2.9b"
+      description: "AIMax 395: 2.9b HIP prefill max batch*chunk"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1c_2.9b' AND scenario = 'prefill_uniform' AND batch_size * token_chunk_size > 999999999"
+
+    - name: "aimax395_hip_prefill_7.2b"
+      description: "AIMax 395: 7.2b HIP prefill max batch*chunk"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g1d_7.2b' AND scenario = 'prefill_uniform' AND batch_size * token_chunk_size > 999999999"
+
+    - name: "aimax395_hip_prefill_13.3b"
+      description: "AIMax 395: 13.3b HIP prefill max batch*chunk"
+      condition: "backend = 'hip' AND model_name = 'rwkv7_g0b_13.3b' AND scenario = 'prefill_uniform' AND batch_size * token_chunk_size > 999999999"
+
+    # wgpu: only small models fit in 1 GB VRAM
+    - name: "aimax395_wgpu_model_limit"
+      description: "AIMax 395: wgpu only supports small models (1 GB VRAM)"
+      condition: "backend LIKE 'wgpu%' AND model_name != 'rwkv7_g1a_0.1b' AND model_name != 'rwkv7_othello_9m' AND model_name != 'rwkv_puzzle15'"
+
+    - name: "aimax395_wgpu_decode_limit"
+      description: "AIMax 395: wgpu decode max batch (placeholder)"
+      condition: "backend LIKE 'wgpu%' AND scenario = 'decode_only' AND batch_size > 999999999"
 
 # =============================================================================
 # LIMITS

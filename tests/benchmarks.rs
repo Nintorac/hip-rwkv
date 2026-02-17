@@ -715,6 +715,66 @@ struct HipWeights {
     vocab_size: u32,
 }
 
+impl HipWeights {
+    /// Get model architecture info for memory estimation.
+    fn model_info(&self) -> &hip_rwkv::hip::Rwkv7ModelInfo {
+        &self.weights.info
+    }
+
+    /// Get LoRA dimensions for memory estimation.
+    fn lora_dims(&self) -> hip_rwkv::hip::LoraDims {
+        self.weights.lora_dims()
+    }
+}
+
+/// Maximum device memory budget in bytes (from env or default).
+///
+/// Set `WEB_RWKV_MAX_DEVICE_MB` to limit memory consumption during benchmarks.
+/// This prevents `hipMalloc` from silently falling through to GTT (system RAM)
+/// on APUs, which can wedge the system when large allocations are touched.
+///
+/// Default: 65536 MB (64 GB). For AIMax 395 with 96 GB unified memory,
+/// a reasonable value is 32768 (32 GB) to leave headroom for OS and other processes.
+fn device_memory_budget_bytes() -> usize {
+    std::env::var("WEB_RWKV_MAX_DEVICE_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|mb| mb * 1024 * 1024)
+        .unwrap_or(64 * 1024 * 1024 * 1024) // 64 GB default
+}
+
+/// Estimate GPU memory for a HIP runtime configuration, without allocating.
+///
+/// Returns `None` if `hip_weights` is not available (non-HIP backend).
+fn estimate_hip_memory(
+    hip_weights: &HipWeights,
+    batch_size: usize,
+    token_chunk_size: usize,
+    mode: hip_rwkv::hip::HipRuntimeMode,
+) -> usize {
+    use hip_rwkv::hip::{DecodeScratch, HipRuntimeConfig, PrefillScratch};
+
+    let info = hip_weights.model_info();
+    let lora_dims = hip_weights.lora_dims();
+    let chunk = if token_chunk_size == 0 { 1 } else { token_chunk_size };
+
+    match mode {
+        hip_rwkv::hip::HipRuntimeMode::DecodeOnly => {
+            DecodeScratch::estimate_memory_bytes(info, &lora_dims, batch_size)
+        }
+        hip_rwkv::hip::HipRuntimeMode::PrefillOnly => {
+            let config = HipRuntimeConfig::new(chunk, batch_size);
+            PrefillScratch::estimate_memory_bytes(info, &lora_dims, &config)
+        }
+        hip_rwkv::hip::HipRuntimeMode::Both => {
+            let config = HipRuntimeConfig::new(chunk, batch_size);
+            let prefill = PrefillScratch::estimate_memory_bytes(info, &lora_dims, &config);
+            let decode = DecodeScratch::estimate_memory_bytes(info, &lora_dims, batch_size);
+            prefill + decode
+        }
+    }
+}
+
 /// Create a wgpu context for the given model info
 async fn create_context(info: &ModelInfo) -> anyhow::Result<Context> {
     let instance = wgpu::Instance::default();
@@ -852,6 +912,12 @@ async fn run_decode_benchmark(
     let runtime = &loaded.runtime;
     let warmup_steps = 64.min(decode_steps);
     let settle_ms = 50u64;
+
+    // For decode (T=1), token_chunk_size must be >= batch_size so that all
+    // batch elements are processed in a single infer() call. Otherwise
+    // RnnInput's chunking leaves empty batch slots, which triggers the
+    // prefill path instead of decode.
+    let token_chunk_size = token_chunk_size.max(batch_size as usize);
 
     let mut rng = TokenRng::new(42);
     let mut results = Vec::with_capacity(repeats as usize);
@@ -1593,6 +1659,15 @@ async fn bench_smoke_async() {
 
     let mut total_executed = 0;
     let mut total_errors = 0;
+    let mut total_skipped_budget = 0;
+
+    let memory_budget = device_memory_budget_bytes();
+    if memory_budget < 64 * 1024 * 1024 * 1024 {
+        println!(
+            "[bench] Memory budget: {:.1} MB (WEB_RWKV_MAX_DEVICE_MB)",
+            memory_budget as f64 / (1024.0 * 1024.0)
+        );
+    }
 
     for row in &decode_rows {
         let decode_steps = match row.decode_steps {
@@ -1674,6 +1749,27 @@ async fn bench_smoke_async() {
                         continue;
                     }
                 };
+
+                // Pre-flight memory budget check
+                let estimate = estimate_hip_memory(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::DecodeOnly,
+                );
+                if estimate > memory_budget {
+                    eprintln!(
+                        "[bench] SKIP: estimated {:.1} MB > budget {:.1} MB (batch={}, model={})",
+                        estimate as f64 / (1024.0 * 1024.0),
+                        memory_budget as f64 / (1024.0 * 1024.0),
+                        batch_size,
+                        model.model_name,
+                    );
+                    total_skipped_budget += 1;
+                    loaded_model = None;
+                    continue;
+                }
+
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
@@ -1937,6 +2033,28 @@ async fn bench_smoke_async() {
                         continue;
                     }
                 };
+
+                // Pre-flight memory budget check
+                let estimate = estimate_hip_memory(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::PrefillOnly,
+                );
+                if estimate > memory_budget {
+                    eprintln!(
+                        "[bench] SKIP: estimated {:.1} MB > budget {:.1} MB (batch={}, chunk={}, model={})",
+                        estimate as f64 / (1024.0 * 1024.0),
+                        memory_budget as f64 / (1024.0 * 1024.0),
+                        batch_size,
+                        token_chunk_size,
+                        model.model_name,
+                    );
+                    total_skipped_budget += 1;
+                    loaded_model = None;
+                    continue;
+                }
+
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
@@ -2207,6 +2325,28 @@ async fn bench_smoke_async() {
                         continue;
                     }
                 };
+
+                // Pre-flight memory budget check
+                let estimate = estimate_hip_memory(
+                    hw,
+                    batch_size as usize,
+                    token_chunk_size as usize,
+                    hip_rwkv::hip::HipRuntimeMode::PrefillOnly,
+                );
+                if estimate > memory_budget {
+                    eprintln!(
+                        "[bench] SKIP: estimated {:.1} MB > budget {:.1} MB (batch={}, chunk={}, model={})",
+                        estimate as f64 / (1024.0 * 1024.0),
+                        memory_budget as f64 / (1024.0 * 1024.0),
+                        batch_size,
+                        token_chunk_size,
+                        model.model_name,
+                    );
+                    total_skipped_budget += 1;
+                    loaded_model = None;
+                    continue;
+                }
+
                 println!(
                     "[bench] Creating runtime: batch={}, chunk={}",
                     batch_size, token_chunk_size
@@ -2419,6 +2559,12 @@ async fn bench_smoke_async() {
     println!("\n=== Benchmark Summary ===");
     println!("[bench] Cases executed: {}", total_executed);
     println!("[bench] Errors: {}", total_errors);
+    if total_skipped_budget > 0 {
+        println!(
+            "[bench] Skipped (memory budget): {}",
+            total_skipped_budget
+        );
+    }
     println!("[bench] Records written: {}", writer.records_written());
     println!("[bench] Output file: {}", output_path.display());
 }

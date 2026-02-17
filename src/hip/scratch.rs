@@ -616,6 +616,85 @@ impl PrefillScratch {
             + u32_elements * std::mem::size_of::<u32>()
     }
 
+    /// Estimate total GPU memory (bytes) for prefill scratch + state, without allocating.
+    ///
+    /// This mirrors the allocation logic in `new()` but only computes sizes. Use it
+    /// for pre-flight budget checks to reject configurations that would exceed a memory
+    /// limit before calling `hipMalloc`.
+    pub fn estimate_memory_bytes(
+        info: &Rwkv7ModelInfo,
+        lora_dims: &LoraDims,
+        config: &HipRuntimeConfig,
+    ) -> usize {
+        let t = config.max_prefill_chunk;
+        let b = config.batch_size;
+        let c = info.n_embd;
+        let h = info.n_hidden;
+        let v = info.n_vocab;
+
+        // Packed layout: standard buffers use [dim, T, 1, 1]
+        let std_size = c * t;
+        let ffn_size = h * t;
+        let out_size = v * t;
+
+        // 26 standard [c,T] buffers: x, x_ln, att_xr..att_xg(6), att_r..att_v(3),
+        // att_w, att_a, att_g, att_kk, att_k_ctrl, wkv_a, wkv_b, w_decay,
+        // wkv_out, wkv_normed, wkv_bonus, att_out, ffn_xk, ffn_out, v_first
+        // + 4 LoRA std-shape: lora_a_proj, v_lora2, temp1, temp2
+        // = 30 std-sized buffers
+        let std_count = 30;
+        let ffn_count = 2; // ffn_k, ffn_k_sq
+        let state_count = 2; // new_att_shift [c,B], new_ffn_shift [c,B]
+
+        // LoRA buffers (packed: [lora_dim, T, 1, 1])
+        // lora_w + lora_w_tanh = 2 * w_dim
+        // lora_a = a_dim
+        // lora_g + lora_g_sig = 2 * g_dim
+        // lora_v = v_dim (or 1 if None)
+        let lora_elements = (2 * lora_dims.w_dim
+            + lora_dims.a_dim
+            + 2 * lora_dims.g_dim
+            + lora_dims.v_dim.unwrap_or(1))
+            * t;
+
+        // FLA buffer sizes (all f32)
+        let fla_c = config.fla_chunk_size;
+        let head_size = info.head_size;
+        let n_head = info.n_head;
+        let max_total_chunks = t.div_ceil(fla_c) + b;
+        // 8 per-token buffers: fla_gi, fla_qg, fla_kg, fla_ag, fla_bg, fla_w_wy, fla_u_wy, fla_v_new
+        let fla_per_token_elements = 8 * head_size * n_head * t;
+        // 5 chunk-matrix buffers: fla_A_qk, fla_A_qb, fla_A_ab, fla_A_ak, fla_A_ab_inv
+        let fla_chunk_mat_elements = 5 * fla_c * fla_c * n_head * max_total_chunks;
+        // 1 chunk-state buffer: fla_h
+        let fla_chunk_state_elements = head_size * head_size * n_head * max_total_chunks;
+        let fla_f32_elements =
+            fla_per_token_elements + fla_chunk_mat_elements + fla_chunk_state_elements;
+
+        let f16_elements = std_count * std_size
+            + ffn_count * ffn_size
+            + state_count * c * b
+            + lora_elements
+            + out_size; // logits (f16)
+        let f32_elements = out_size + fla_f32_elements; // logits_f32 + FLA buffers
+        let u32_elements = t + b; // token_staging [T] + lens_gpu [B]
+
+        // Per-layer persistent state
+        let state_per_layer = 2 * c * b * std::mem::size_of::<f16>() // att_shift + ffn_shift
+            + head_size * head_size * n_head * b * std::mem::size_of::<f32>(); // wkv_state
+        let state_total = state_per_layer * info.n_layer;
+
+        // Pinned host buffers (not GPU memory, but allocated via hipHostMalloc)
+        let pinned_bytes = out_size * std::mem::size_of::<f32>() // logits_staging
+            + c * t * std::mem::size_of::<f16>(); // emb_staging
+
+        f16_elements * std::mem::size_of::<f16>()
+            + f32_elements * std::mem::size_of::<f32>()
+            + u32_elements * std::mem::size_of::<u32>()
+            + state_total
+            + pinned_bytes
+    }
+
     /// Check if buffers are large enough for given sequence length and batch size.
     pub fn supports(&self, seq_len: usize, batch_size: usize) -> bool {
         seq_len <= self.config.max_prefill_chunk && batch_size <= self.config.batch_size
@@ -989,6 +1068,73 @@ impl DecodeScratch {
             // Pinned host buffer for async embedding upload [n_embd * 1 * B]
             emb_staging: PinnedBuffer::new(c * t * b)?,
         })
+    }
+
+    /// Estimate total GPU memory (bytes) for decode scratch + state, without allocating.
+    ///
+    /// This mirrors the allocation logic in `new()` but only computes sizes. Use it
+    /// for pre-flight budget checks to reject configurations that would exceed a memory
+    /// limit before calling `hipMalloc`.
+    pub fn estimate_memory_bytes(
+        info: &Rwkv7ModelInfo,
+        lora_dims: &LoraDims,
+        batch_size: usize,
+    ) -> usize {
+        let t = 1usize; // T=1 always for decode
+        let b = batch_size;
+        let c = info.n_embd;
+        let h = info.n_hidden;
+        let v = info.n_vocab;
+
+        // Standard buffers [n_embd, 1, B]: x, x_ln, att_xr..att_xg(6), att_r..att_v(3),
+        // att_w, att_a, att_g, att_kk, att_k_ctrl, wkv_a, wkv_b, w_decay,
+        // wkv_out, wkv_normed, wkv_bonus, att_out, ffn_xk, ffn_out, v_first
+        // + lora_a_proj, v_lora2, temp1, temp2 = 30 std-sized buffers
+        let std_count = 30;
+        let std_size = c * t * b;
+
+        let ffn_count = 2; // ffn_k, ffn_k_sq
+        let ffn_size = h * t * b;
+
+        // State-shaped buffers [c, B]: new_att_shift, new_ffn_shift
+        let state_buf_size = 2 * c * b;
+
+        // LoRA buffers [lora_dim, 1, B]
+        // lora_w + lora_w_tanh = 2 * w_dim
+        // lora_a = a_dim
+        // lora_g + lora_g_sig = 2 * g_dim
+        // lora_v = v_dim (or 1 if None)
+        let lora_elements = (2 * lora_dims.w_dim
+            + lora_dims.a_dim
+            + 2 * lora_dims.g_dim
+            + lora_dims.v_dim.unwrap_or(1))
+            * t
+            * b;
+
+        let out_size = v * t * b;
+
+        let f16_elements = std_count * std_size
+            + ffn_count * ffn_size
+            + state_buf_size
+            + lora_elements
+            + out_size; // logits (f16)
+        let f32_elements = out_size; // logits_f32
+        let u32_elements = t * b + b; // token_staging [1,B] + lens_gpu [B]
+
+        // Per-layer persistent state
+        let state_per_layer = 2 * c * b * std::mem::size_of::<f16>() // att_shift + ffn_shift
+            + info.head_size * info.head_size * info.n_head * b * std::mem::size_of::<f32>(); // wkv_state
+        let state_total = state_per_layer * info.n_layer;
+
+        // Pinned host buffers
+        let pinned_bytes = out_size * std::mem::size_of::<f32>() // logits_staging
+            + c * t * b * std::mem::size_of::<f16>(); // emb_staging
+
+        f16_elements * std::mem::size_of::<f16>()
+            + f32_elements * std::mem::size_of::<f32>()
+            + u32_elements * std::mem::size_of::<u32>()
+            + state_total
+            + pinned_bytes
     }
 
     /// Reset resident GPU state to zeros.
